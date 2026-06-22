@@ -502,17 +502,17 @@ function maybeStageNodeModulesAddon(ctx, errors) {
 }
 
 function validateLoadedBindings(ctx, bindings, candidate) {
-	// In workspace dev (running out of `packages/natives/native/` rather than a
-	// `node_modules` install or a compiled bundle) the local `.node` only gains
-	// the renamed sentinel after `bun --cwd=packages/natives run build`. Skip
-	// validation there so a stale post-pull dev tree boots while the rebuild
-	// completes; install and compiled-binary paths still validate.
+	// In workspace dev the local .node may lack the renamed sentinel after a
+	// pull, skip validation there.
 	if (ctx.isWorkspaceLoad) return;
 	if (typeof bindings[ctx.versionSentinelExport] === "function") return;
-	throw new Error(
-		`Loaded ${candidate} but it does not expose the @oh-my-pi/pi-natives@${ctx.packageVersion} ` +
-			`version sentinel \`${ctx.versionSentinelExport}\`. The .node file on disk is from a different ` +
-			"release than this loader — reinstall to re-sync.",
+	// Version mismatch — log a warning but proceed. This allows a compiled
+	// binary to load a .node from a close release (e.g. v16.1.13 .node with
+	// a v16.1.8 binary) when the user cannot rebuild Rust from source.
+	console.warn(
+		`[pi-natives] Loaded ${candidate} but it does not expose the version sentinel ` +
+			`\`${ctx.versionSentinelExport}\`. Proceeding anyway — if crashes occur, ` +
+			"reinstall or rebuild the native addon.",
 	);
 }
 
