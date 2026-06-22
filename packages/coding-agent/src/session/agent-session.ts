@@ -9026,6 +9026,41 @@ export class AgentSession {
 			providerKeys.add(`openai-responses:${nextModel.provider}`);
 		}
 
+		// openai-completions: clear cached per-model session state (strict tools
+		// disable scope, reasoning effort fallback, etc.) when provider or baseUrl
+		// changes. The session keys are per-model (provider:baseUrl:modelId), so
+		// iterate rather than add a single key.
+		const openaiCompletionsPrefix = "openai-completions:";
+		if (currentModel.api === "openai-completions" || nextModel.api === "openai-completions") {
+			const oldProvider = currentModel.api === "openai-completions" ? currentModel.provider : null;
+			const oldBaseUrl = currentModel.api === "openai-completions" ? (currentModel.baseUrl ?? "") : null;
+			const newProvider = nextModel.provider;
+			const newBaseUrl = nextModel.baseUrl ?? "";
+			if (oldProvider !== newProvider || oldBaseUrl !== newBaseUrl) {
+				// Collect and remove all session entries for the old provider+baseUrl
+				const staleKeys: string[] = [];
+				for (const key of this.#providerSessionState.keys()) {
+					if (oldProvider !== null && key.startsWith(`${openaiCompletionsPrefix}${oldProvider}:${oldBaseUrl}:`)) {
+						staleKeys.push(key);
+					}
+				}
+				for (const staleKey of staleKeys) {
+					const state = this.#providerSessionState.get(staleKey);
+					if (state) {
+						try {
+							state.close();
+						} catch (error) {
+							logger.warn("Failed to close openai-completions session state during model switch", {
+								providerKey: staleKey,
+								error: String(error),
+							});
+						}
+					}
+					this.#providerSessionState.delete(staleKey);
+				}
+			}
+		}
+
 		for (const providerKey of providerKeys) {
 			const state = this.#providerSessionState.get(providerKey);
 			if (!state) continue;
