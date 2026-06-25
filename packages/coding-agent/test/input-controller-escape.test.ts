@@ -78,6 +78,10 @@ function createContext(): {
 		shutdown: Spy;
 		startPendingSubmission: StartPendingSubmissionSpy;
 		updatePendingMessagesDisplay: Spy;
+		loadingAnimationSetMessage: Spy;
+		showStatus: Spy;
+		statusContainerAddChild: Spy;
+		statusContainerRemoveChild: Spy;
 	};
 	inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined>;
 } {
@@ -91,9 +95,17 @@ function createContext(): {
 	const clearQueue = vi.fn(() => ({ steering: [], followUp: [] }));
 	const getQueuedMessages = vi.fn(() => ({ steering: [], followUp: [] }));
 	const onInputCallback = vi.fn();
+	const showStatus = vi.fn();
 	const requestRender = vi.fn();
+	const loadingAnimationSetMessage = vi.fn();
 	const resetDisplay = vi.fn();
 	const inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
+	const statusContainerAddChild = vi.fn();
+	const statusContainerRemoveChild = vi.fn();
+	const statusContainer = {
+		addChild: statusContainerAddChild,
+		removeChild: statusContainerRemoveChild,
+	};
 	const handleBtwCommand = vi.fn(async () => {});
 	const handleBtwEscape = vi.fn(() => true);
 	const hasActiveBtw = vi.fn(() => false);
@@ -121,10 +133,9 @@ function createContext(): {
 		pendingImages: [],
 		pendingImageLinks: [],
 	};
-
 	let ctx!: InteractiveModeContext;
 	const ensureLoadingAnimation = vi.fn(() => {
-		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		ctx.loadingAnimation = { setMessage: loadingAnimationSetMessage } as unknown as InteractiveModeContext["loadingAnimation"];
 	});
 
 	ctx = {
@@ -138,6 +149,7 @@ function createContext(): {
 			}),
 			addStartListener: vi.fn(),
 		} as unknown as InteractiveModeContext["ui"],
+		statusContainer,
 		loadingAnimation: undefined,
 		autoCompactionLoader: undefined,
 		retryLoader: undefined,
@@ -152,7 +164,7 @@ function createContext(): {
 			queuedMessageCount: 0,
 			messages: [],
 			extensionRunner: undefined,
-			abort,
+			abort: vi.fn(async () => {}),
 			abortBash,
 			abortEval,
 			clearQueue,
@@ -170,6 +182,8 @@ function createContext(): {
 		sessionManager: {
 			getSessionName: () => "existing session",
 			flushSync: vi.fn(),
+			getBranch: vi.fn(),
+			branch: vi.fn(),
 		} as unknown as InteractiveModeContext["sessionManager"],
 		keybindings: {
 			getKeys: () => [],
@@ -177,17 +191,23 @@ function createContext(): {
 		compactionQueuedMessages: [],
 		isBashMode: false,
 		isPythonMode: false,
+		lastEscapeTime: 0,
 		optimisticUserMessageSignature: undefined,
 		locallySubmittedUserSignatures: new Set<string>(),
 		onInputCallback,
 		addMessageToChat,
 		cancelPendingSubmission,
+		clearOptimisticUserMessage: vi.fn(),
 		ensureLoadingAnimation,
 		finishPendingSubmission: vi.fn(),
 		flushPendingBashComponents: vi.fn(),
 		markPendingSubmissionStarted: vi.fn(() => true),
 		startPendingSubmission,
 		updatePendingMessagesDisplay,
+		showStatus,
+		showWarning: vi.fn(),
+		rebuildChatFromMessages: vi.fn(),
+		clearTransientSessionUi: vi.fn(),
 		updateEditorBorderColor: vi.fn(),
 		showDebugSelector: vi.fn(),
 		toggleTodoExpansion: vi.fn(),
@@ -224,6 +244,7 @@ function createContext(): {
 			flushSync: ctx.sessionManager.flushSync as Spy,
 			handleBtwCommand,
 			handleBtwEscape,
+			loadingAnimationSetMessage,
 			hasActiveBtw,
 			handleOmfgEscape,
 			hasActiveOmfg,
@@ -233,6 +254,9 @@ function createContext(): {
 			resetDisplay,
 			shutdown: ctx.shutdown as Spy,
 			startPendingSubmission,
+			showStatus,
+			statusContainerAddChild,
+			statusContainerRemoveChild,
 			updatePendingMessagesDisplay,
 		},
 		inputListeners,
@@ -248,12 +272,12 @@ afterEach(() => {
 });
 
 describe("InputController escape behavior", () => {
-	it("prefers canceling a pending optimistic submission before aborting the session", async () => {
+	it("arms two-step Esc during loading animation, cancels on second press", async () => {
 		const { ctx, editor, spies } = createContext();
 		const submission = createSubmission({ text: "hello" });
 		spies.startPendingSubmission.mockReturnValue(submission);
 		spies.cancelPendingSubmission.mockReturnValue(true);
-		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		ctx.loadingAnimation = { setMessage: spies.loadingAnimationSetMessage } as unknown as InteractiveModeContext["loadingAnimation"];
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -268,6 +292,14 @@ describe("InputController escape behavior", () => {
 		});
 		expect(spies.onInputCallback).toHaveBeenCalledWith(submission);
 
+		// First Esc: arms timer, changes loader message
+		editor.onEscape?.();
+		expect(spies.loadingAnimationSetMessage).toHaveBeenCalledWith("Working… (press ESC again to cancel)");
+		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		// Second Esc within 500ms: restores text, cancels pending submission
 		editor.onEscape?.();
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 		expect(spies.clearQueue).not.toHaveBeenCalled();
@@ -310,14 +342,21 @@ describe("InputController escape behavior", () => {
 		expect(editor.getText()).toBe("");
 	});
 
-	it("falls back to aborting the active session when no pending optimistic submission exists", () => {
+	it("falls back to aborting the active session on second Esc when no pending optimistic submission exists", () => {
 		const { ctx, editor, spies } = createContext();
-		ctx.loadingAnimation = {} as InteractiveModeContext["loadingAnimation"];
+		ctx.loadingAnimation = { setMessage: vi.fn() } as unknown as InteractiveModeContext["loadingAnimation"];
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
-		editor.onEscape?.();
 
+		// First Esc: arms the timer
+		editor.onEscape?.();
+		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
+		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		// Second Esc within 500ms: confirms cancel, aborts
+		editor.onEscape?.();
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 		expect(spies.clearQueue).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledTimes(1);
@@ -406,17 +445,21 @@ describe("InputController escape behavior", () => {
 		expect(spies.abortBash).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
 	});
-
-	it("aborts streaming even when the working loader is no longer present", () => {
+	it("arms a silent two-step Esc during streaming, cancels on second press", async () => {
 		const { ctx, editor, spies } = createContext();
 		(ctx.session as { isStreaming: boolean }).isStreaming = true;
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
-		editor.onEscape?.();
 
+		// First Esc: arms the timer, no abort
+		editor.onEscape?.();
 		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
 		expect(spies.clearQueue).not.toHaveBeenCalled();
+		expect(spies.abort).not.toHaveBeenCalled();
+
+		// Second Esc (within 500ms): confirms cancel, restores text, aborts
+		editor.onEscape?.();
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 	});
 

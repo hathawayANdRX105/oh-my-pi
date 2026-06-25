@@ -1,6 +1,11 @@
 # Changelog
 
 ## [Unreleased]
+### Added
+
+- Two-step Esc confirm-cancel during streaming: first Esc shows a hint, second Esc within 500ms restores the prompt text+images to the editor and aborts the stream, allowing the user to edit and resubmit
+
+### Fixed
 
 ## [16.1.14] - 2026-06-22
 

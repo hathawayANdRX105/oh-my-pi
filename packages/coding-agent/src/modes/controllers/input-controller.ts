@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
+
 import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
@@ -15,6 +16,7 @@ import type { InteractiveModeContext } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
+import { interruptHint } from "../shared";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
 import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
@@ -107,6 +109,73 @@ export class InputController {
 	// Sequential index for `local://attachment-N` references created by the large-paste local-file
 	// action. Seeded from 0 and bumped past any existing attachment files in #attachPasteAsFile.
 	#attachmentCounter = 0;
+	// Last text+images submitted while streaming, saved so a two-step Esc
+	// can restore them to the editor on confirm-cancel.
+	#lastSubmittedText = "";
+	#lastSubmittedImages: ImageContent[] = [];
+	#lastSubmittedImageLinks: (string | undefined)[] = [];
+	#escConfirmTimerId: ReturnType<typeof setTimeout> | undefined;
+
+
+	#restoreLastSubmittedToEditor(): void {
+		if (this.#lastSubmittedText && !this.ctx.editor.getText().trim()) {
+			this.ctx.editor.setText(this.#lastSubmittedText);
+		}
+		if (this.#lastSubmittedImages.length > 0) {
+			this.ctx.editor.pendingImages = [...this.#lastSubmittedImages];
+			this.ctx.editor.pendingImageLinks = [...this.#lastSubmittedImageLinks];
+			this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+		}
+	}
+	#armEscCancelConfirmation(message = "Working… (press ESC again to cancel)"): void {
+		this.ctx.lastEscapeTime = Date.now();
+		this.ctx.loadingAnimation?.setMessage(message);
+		this.ctx.ui.requestRender();
+
+		clearTimeout(this.#escConfirmTimerId);
+		this.#escConfirmTimerId = setTimeout(() => {
+			this.#escConfirmTimerId = undefined;
+			this.ctx.lastEscapeTime = 0;
+			this.ctx.loadingAnimation?.setMessage(`Working…${interruptHint()}`);
+			this.ctx.ui.requestRender();
+		}, 2000);
+	}
+
+	/** After aborting a streaming submission, undo the last user message entry from the
+	 *  session so the chat rebuild goes back to the previous conversation state.
+	 *  Editor text+images were already restored by #restoreLastSubmittedToEditor. */
+	#rollbackSessionToBeforeLastUserMessage(): void {
+		if (!this.#lastSubmittedText) return;
+		try {
+			const entries = this.ctx.sessionManager.getBranch();
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const entry = entries[i];
+				if (entry.type === "message" && "message" in entry && entry.message?.role === "user" && entry.parentId) {
+					// Walk up past any aborted assistant messages — the user message may be
+					// parented to a previous aborted assistant (sibling of an earlier user turn),
+					// and branching there would leave the aborted assistant's usage/connection
+					// info visible. Instead, find the first non-assistant ancestor.
+					let targetParentId: string | null = entry.parentId;
+					while (targetParentId) {
+						const parent = entries.find(e => e.id === targetParentId);
+						if (parent?.type === "message" && "message" in parent && parent.message?.role === "assistant") {
+							targetParentId = parent.parentId;
+						} else {
+							break;
+						}
+					}
+					if (targetParentId) {
+						this.ctx.sessionManager.branch(targetParentId);
+					}
+					break;
+				}
+			}
+			this.ctx.clearOptimisticUserMessage();
+			this.ctx.rebuildChatFromMessages();
+		} catch {
+			// Branch may throw if entry not found — not critical, UI still works
+		}
+	}
 
 	#showTinyTitleDownloadProgress(modelKey: string): void {
 		if (!isTinyTitleLocalModelKey(modelKey)) return;
@@ -188,6 +257,7 @@ export class InputController {
 			});
 		}
 		this.ctx.editor.onEscape = () => {
+
 			// Active context maintenance owns Esc: auto/manual compaction,
 			// handoff generation, and auto-retry backoff all advertise
 			// "(esc to cancel)". Dispatch on live session state instead of
@@ -256,7 +326,7 @@ export class InputController {
 			}
 			if (this.ctx.collabGuest) {
 				// Guest Esc: ask the host to interrupt its agent; the local replica
-				// session is never streaming, so the native abort path below would
+				this.restoreQueuedMessagesToEditor({ abort: true, currentText: this.ctx.editor.getText() });
 				// no-op.
 				if (this.ctx.collabGuest.state?.isStreaming || this.ctx.loadingAnimation) {
 					this.ctx.collabGuest.sendAbort();
@@ -264,10 +334,27 @@ export class InputController {
 				return;
 			}
 			if (this.ctx.loadingAnimation) {
-				if (this.ctx.cancelPendingSubmission()) {
+				const now = Date.now();
+				if (now - this.ctx.lastEscapeTime >= 2000) {
+
+					this.#armEscCancelConfirmation();
 					return;
 				}
-				this.restoreQueuedMessagesToEditor({ abort: true });
+				this.ctx.lastEscapeTime = 0;
+				clearTimeout(this.#escConfirmTimerId);
+				this.#restoreLastSubmittedToEditor();
+				if (this.ctx.cancelPendingSubmission()) {
+					clearTimeout(this.#escConfirmTimerId);
+					this.ctx.ui.requestRender();
+					return;
+				}
+				this.restoreQueuedMessagesToEditor({ currentText: this.ctx.editor.getText() });
+				const abortPromise = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				void Promise.resolve(abortPromise).then(() => {
+					this.#rollbackSessionToBeforeLastUserMessage();
+					this.ctx.clearTransientSessionUi();
+					this.ctx.ui.requestRender();
+				});
 			} else if (this.ctx.session.isBashRunning) {
 				this.ctx.session.abortBash();
 			} else if (this.ctx.isBashMode) {
@@ -281,7 +368,32 @@ export class InputController {
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
 			} else if (this.ctx.session.isStreaming) {
-				void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+				// Silent two-step Esc: first press arms the timer, second press
+				// within 2s confirms cancel. On confirm, restore the queued
+				// prompt back to the editor before aborting so the user can
+				// edit and resubmit.
+				const now = Date.now();
+				if (now - this.ctx.lastEscapeTime < 2000) {
+					this.ctx.lastEscapeTime = 0;
+					clearTimeout(this.#escConfirmTimerId);
+					this.restoreQueuedMessagesToEditor({ currentText: this.#lastSubmittedText || undefined });
+					if (this.#lastSubmittedText && !this.ctx.editor.getText().trim()) {
+						this.ctx.editor.setText(this.#lastSubmittedText);
+					}
+					if (this.#lastSubmittedImages.length > 0) {
+						this.ctx.editor.pendingImages = [...this.#lastSubmittedImages];
+						this.ctx.editor.pendingImageLinks = [...this.#lastSubmittedImageLinks];
+						this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
+					}
+					const abortPromise = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+					void Promise.resolve(abortPromise).then(() => {
+						this.#rollbackSessionToBeforeLastUserMessage();
+						this.ctx.clearTransientSessionUi();
+						this.ctx.ui.requestRender();
+					});
+				} else {
+					this.ctx.lastEscapeTime = now;
+				}
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc with typed text clears the draft instead of (or before) any double-Esc action
 				this.ctx.editor.setText("");
@@ -668,6 +780,11 @@ export class InputController {
 			// This handles extension commands (execute immediately), prompt template expansion, and queueing
 			if (this.ctx.session.isStreaming) {
 				this.ctx.editor.addToHistory(text);
+				// Save the submitted text so a two-step Esc can restore it to the editor
+				// after a confirm-cancel during streaming.
+				this.#lastSubmittedText = text;
+				this.#lastSubmittedImages = inputImages && inputImages.length > 0 ? [...inputImages] : [];
+				this.#lastSubmittedImageLinks = inputImageLinks && inputImageLinks.length > 0 ? [...inputImageLinks] : [];
 				this.ctx.editor.setText("");
 				this.ctx.editor.imageLinks = undefined;
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
@@ -744,6 +861,9 @@ export class InputController {
 				// `submitInteractiveInput` dispatches it. Steering matches the
 				// streaming-branch Enter (above) and keeps the message from throwing
 				// AgentBusyError on that race.
+				this.#lastSubmittedText = text;
+				this.#lastSubmittedImages = inputImages && inputImages.length > 0 ? [...inputImages] : [];
+				this.#lastSubmittedImageLinks = inputImageLinks && inputImageLinks.length > 0 ? [...inputImageLinks] : [];
 				const submission = this.ctx.startPendingSubmission({
 					text,
 					images,
@@ -764,6 +884,9 @@ export class InputController {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.editor.pendingImages = [];
 				this.ctx.editor.pendingImageLinks = [];
+				this.#lastSubmittedText = text;
+				this.#lastSubmittedImages = inputImages && inputImages.length > 0 ? [...inputImages] : [];
+				this.#lastSubmittedImageLinks = inputImageLinks && inputImageLinks.length > 0 ? [...inputImageLinks] : [];
 				try {
 					await this.ctx.withLocalSubmission(
 						text,
@@ -1029,6 +1152,9 @@ export class InputController {
 		const images = this.ctx.editor.pendingImages.length > 0 ? [...this.ctx.editor.pendingImages] : undefined;
 
 		if (this.ctx.session.isStreaming) {
+			this.#lastSubmittedText = text;
+			this.#lastSubmittedImages = images && images.length > 0 ? [...images] : [];
+			this.#lastSubmittedImageLinks = [];
 			this.ctx.editor.clearDraft(text);
 			await this.ctx.withLocalSubmission(
 				text,
