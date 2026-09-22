@@ -215,6 +215,7 @@ import {
 	releaseIdleTabsForOwner,
 	releaseTabsForOwner,
 } from "../tools/browser/tab-supervisor";
+import { disposeUnreferencedBrowsers } from "../tools/browser/registry";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
 import { releaseComputerSessionsForOwner } from "../tools/computer/supervisor";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
@@ -4742,17 +4743,28 @@ export class AgentSession {
 
 	async #releaseOwnedBrowserTabs(ownerId: string | undefined): Promise<void> {
 		if (!ownerId) return;
+		let released = 0;
 		try {
-			const released = await withTimeout(
+			released = await withTimeout(
 				releaseTabsForOwner(ownerId, { kill: true }),
 				3_000,
 				"Timed out releasing owned browser tabs during dispose",
 			);
+		} catch (error) {
+			logger.warn("Failed to release owned browser tabs during dispose", { error: String(error) });
+		} finally {
 			if (released > 0) {
 				logger.debug("Released owned browser tabs during dispose", { ownerId, released });
 			}
-		} catch (error) {
-			logger.warn("Failed to release owned browser tabs during dispose", { error: String(error) });
+			// Anything still at refCount 0 was never reaped by the owner walk
+			// (reused tabs, aborted launches, a timed-out release above). Close
+			// those too — handles still held (refCount > 0) are skipped, so a
+			// timed-out release cannot cause an unsafe kill here.
+			try {
+				await disposeUnreferencedBrowsers({ kill: true });
+			} catch (error) {
+				logger.warn("Failed to dispose unreferenced browsers during dispose", { error: String(error) });
+			}
 		}
 	}
 

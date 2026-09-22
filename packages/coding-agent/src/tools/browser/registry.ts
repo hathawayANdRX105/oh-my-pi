@@ -463,3 +463,34 @@ async function openSharedHeadlessHandle(
 export function getBrowsersMapForTest(): ReadonlyMap<string, BrowserHandle> {
 	return browsers;
 }
+
+/**
+ * Dispose every browser handle nobody holds a tab on. `releaseTabsForOwner`
+ * only walks `tabs`, so a handle whose refCount already hit 0 — an aborted
+ * launch, a tab closed without `kill`, a creator session that exited while a
+ * reuser kept no record — is invisible to session teardown and its browser
+ * outlives the process. (Issue #3963, the half the owner walk misses.)
+ *
+ * Kill semantics stay inside `disposeBrowserHandle`: headless close is
+ * bounded and force-killed, shared daemons / connected / relay browsers are
+ * disconnect-only, spawned subprocesses we own are killed, borrowed CDP pids
+ * are never killed. Deliberately skips refCount > 0: the map is module-global
+ * and shared across sessions, so closing a live handle here would kill
+ * another session's tabs.
+ */
+export async function disposeUnreferencedBrowsers(opts: ReleaseBrowserOptions): Promise<number> {
+	const stale = [...browsers.values()].filter(handle => handle.refCount === 0);
+	let disposed = 0;
+	for (const handle of stale) {
+		if (browsers.get(handle.key) !== handle) continue;
+		browsers.delete(handle.key);
+		await disposeBrowserHandle(handle, opts);
+		disposed++;
+	}
+	return disposed;
+}
+
+/** True while `handle` is still the registry entry for its key. */
+export function isBrowserRegistered(handle: BrowserHandle): boolean {
+	return browsers.get(handle.key) === handle;
+}

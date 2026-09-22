@@ -3435,7 +3435,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			id: value.id,
 			objective: value.objective,
 			status: value.status as Goal["status"],
-			tokenBudget: typeof value.tokenBudget === "number" ? value.tokenBudget : undefined,
+			// Local unbounded-goal: never rehydrate a numeric budget from session data.
+			tokenBudget: undefined,
 			tokensUsed: value.tokensUsed,
 			timeUsedSeconds: value.timeUsedSeconds,
 			createdAt: value.createdAt,
@@ -3459,8 +3460,18 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#exitGoalMode({ reason: "dropped", silent: true });
 				return;
 			}
+			const wasEnabled = this.goalModeEnabled;
 			this.goalModeEnabled = event.state?.enabled === true;
 			this.goalModePaused = event.state?.enabled !== true && event.state?.goal?.status === "paused";
+			// Agent-side goal({ op: "create" }) bypasses /goal, so activate its context too.
+			if (this.goalModeEnabled && !wasEnabled) {
+				const previousTools = this.session.getEnabledToolNames().filter(name => name !== "goal");
+				this.#goalModePreviousTools = previousTools;
+				await this.session.setActiveToolsByName([...new Set([...previousTools, "goal"])]);
+				if (this.session.isStreaming) {
+					await this.session.sendGoalModeContext({ deliverAs: "steer" });
+				}
+			}
 			if (!event.state?.enabled) {
 				this.#cancelGoalContinuation();
 			}
@@ -3605,7 +3616,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (this.goalModeEnabled || this.goalModePaused) {
 			if (this.#goalModePreviousTools !== undefined) {
-				await this.session.setActiveToolsByName(this.#goalModePreviousTools);
+				const nextTools = this.session.settings.get("goal.enabled")
+					? [...new Set([...this.#goalModePreviousTools, "goal"])]
+					: this.#goalModePreviousTools;
+				await this.session.setActiveToolsByName(nextTools);
 			}
 			this.session.setGoalModeState(undefined);
 			this.goalModeEnabled = false;
@@ -3989,7 +4003,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	}): Promise<void> {
 		const previousTools = this.#goalModePreviousTools;
 		if (this.goalModeEnabled && previousTools) {
-			await this.session.setActiveToolsByName(previousTools);
+			const nextTools = this.session.settings.get("goal.enabled")
+				? [...new Set([...previousTools, "goal"])]
+				: previousTools;
+			await this.session.setActiveToolsByName(nextTools);
 		}
 		const currentState = this.session.getGoalModeState();
 		if (options?.reason === "completed") {
@@ -4872,20 +4889,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showStatus("Goal is already complete.");
 			return;
 		}
-		const trimmed = rawBudget.trim().toLowerCase();
-		let nextBudget: number | undefined;
-		if (trimmed !== "off") {
-			const parsed = Number.parseInt(trimmed, 10);
-			if (!Number.isInteger(parsed) || parsed <= 0) {
-				this.showError("Goal budget must be a positive integer or `off`.");
-				return;
-			}
-			nextBudget = parsed;
-		}
-		await this.session.goalRuntime.onBudgetMutated(nextBudget);
+		// Local invariant: goal budgets are always absent.
+		void rawBudget;
+		await this.session.goalRuntime.onBudgetMutated(undefined);
 		this.#resetGoalContinuationSuppression();
 		this.#scheduleGoalContinuation();
-		this.showStatus(nextBudget === undefined ? "Goal budget cleared." : `Goal budget set to ${nextBudget}.`);
+		this.showStatus("Goal budget is hard-locked off in this build (numeric budgets disabled).");
 	}
 
 	async handleGoalModeCommand(
@@ -5032,16 +5041,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		const title = state === "active" ? `Goal: ${summary} (${goal.status})` : `Goal paused: ${summary}`;
 		const items =
 			state === "active"
-				? ["Show details", "Adjust budget…", "Pause", "Drop"]
-				: ["Resume", "Show details", "Adjust budget…", "Drop"];
+				? ["Show details", "Pause", "Drop"]
+				: ["Resume", "Show details", "Drop"];
 		const choice = await this.showHookSelector(title, items);
 		if (!choice) return;
 		switch (choice) {
 			case "Show details":
 				this.#showGoalDetails();
-				return;
-			case "Adjust budget…":
-				await this.#promptGoalBudgetEdit();
 				return;
 			case "Pause":
 				await this.#pauseGoalAction();
