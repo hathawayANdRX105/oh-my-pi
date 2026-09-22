@@ -35,7 +35,6 @@ import type {
 	CompatOf,
 	Model,
 	ModelSpec,
-	ResolvedDevinCompat,
 	ResolvedOpenAICompat,
 	ResolvedOpenAIResponsesCompat,
 	ThinkingConfig,
@@ -56,7 +55,13 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: readonly Effort[] = [
 	Effort.XHigh,
 ];
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
-const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
+const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [
+	Effort.Minimal,
+	Effort.Low,
+	Effort.Medium,
+	Effort.High,
+	Effort.XHigh,
+];
 const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
 const GPT_5_1_CODEX_MINI_EFFORTS: readonly Effort[] = [Effort.Medium, Effort.High];
 const LOW_MEDIUM_HIGH_REASONING_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High];
@@ -160,8 +165,6 @@ export function resolveModelThinking<TApi extends Api>(
 	}
 	// Cascade selects effort only by routing to a sibling model id, so a Devin
 	// model with no explicit routed thinking has no controllable surface —
-	// never fabricate an effort ladder from identity.
-	if ((compat as ResolvedDevinCompat | undefined)?.trustExplicitThinkingOnly === true) return undefined;
 	// Empty/malformed explicit metadata is treated as absent — infer instead.
 	return deriveThinking(spec, compat);
 }

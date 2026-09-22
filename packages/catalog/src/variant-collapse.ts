@@ -160,7 +160,13 @@ function devinTierFamily(
 	};
 }
 
-const GEMINI_3_FLASH_FAMILY_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
+const GEMINI_3_FLASH_FAMILY_EFFORTS: readonly Effort[] = [
+	Effort.Minimal,
+	Effort.Low,
+	Effort.Medium,
+	Effort.High,
+	Effort.XHigh,
+];
 const GEMINI_3_PRO_FAMILY_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 
 /**
@@ -174,6 +180,7 @@ const GEMINI_3_FLASH_FAMILY_BUDGETS: Readonly<Partial<Record<Effort, number>>> =
 	[Effort.Low]: 1000,
 	[Effort.Medium]: 4000,
 	[Effort.High]: 10000,
+	[Effort.XHigh]: 20000,
 };
 const GEMINI_3_PRO_FAMILY_BUDGETS: Readonly<Partial<Record<Effort, number>>> = {
 	[Effort.Low]: 1001,
