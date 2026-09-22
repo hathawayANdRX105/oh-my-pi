@@ -96,6 +96,15 @@ mod imp {
 	// both.
 	const FICLONE: libc::Ioctl = 0x4004_9409;
 
+	/// True when both paths resolve to the same directory (dev + inode), so
+	/// path shape (relative, symlinked parents) cannot fool the comparison.
+	fn same_dir(a: &Path, b: &Path) -> bool {
+		match (fs::metadata(a), fs::metadata(b)) {
+			(Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+			_ => false,
+		}
+	}
+
 	pub fn start(lower: &Path, merged: &Path) -> IsoResult<()> {
 		reflink_into(lower, merged, None)
 	}
@@ -121,7 +130,7 @@ mod imp {
 		};
 		// Reject before prepare_destination: with merged == lower, prepare
 		// would delete the source itself.
-		if fs::same_file(&lower, &merged_abs).unwrap_or(false) {
+		if same_dir(&lower, &merged_abs) {
 			return Err(IsoError::other(format!(
 				"reflink destination {} must differ from source {}",
 				merged.display(),
@@ -223,7 +232,7 @@ mod imp {
 			if file_type.is_symlink() {
 				clone_symlink(&src_path, &dst_path)?;
 			} else if file_type.is_dir() {
-				if fs::same_file(&src_path, guard).unwrap_or(false) {
+				if same_dir(&src_path, guard) {
 					continue;
 				}
 				recursive_reflink(&src_path, &dst_path, None, guard)?;
