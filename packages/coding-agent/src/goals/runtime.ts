@@ -259,6 +259,11 @@ export class GoalRuntime {
 	async onThreadResumed(options?: { preserveActiveGoal?: boolean }): Promise<GoalModeState | undefined> {
 		const state = this.#getStateClone();
 		if (!state) return undefined;
+		// Local hard-lock: drop any restored numeric budget before accounting resumes.
+		state.goal.tokenBudget = undefined;
+		if (state.goal.status === "budget-limited") {
+			state.goal.status = "active";
+		}
 		if (options?.preserveActiveGoal && state.enabled && state.goal.status === "active") {
 			this.#markActiveAccounting(state.goal, true);
 			await this.#commitState(state, { emit: true });
@@ -283,29 +288,20 @@ export class GoalRuntime {
 	}
 
 	async onBudgetMutated(newBudget: number | undefined): Promise<GoalModeState | undefined> {
-		validateTokenBudget(newBudget);
+		void newBudget;
 		return await this.#withAccounting(async () => {
 			this.#budgetReportedFor = undefined;
 			await this.#flushUsageLocked("suppressed");
 			const state = this.#getStateClone();
 			if (!state?.goal) return undefined;
-			state.goal.tokenBudget = newBudget;
+			state.goal.tokenBudget = undefined;
 			state.goal.updatedAt = this.#now();
-			let shouldSteer = false;
-			if (newBudget !== undefined && state.goal.tokensUsed >= newBudget) {
-				if (state.goal.status === "active") {
-					state.goal.status = "budget-limited";
-					shouldSteer = true;
-				}
-			} else if (state.goal.status === "budget-limited") {
+			if (state.goal.status === "budget-limited") {
 				state.goal.status = "active";
 				state.enabled = true;
 				this.#markActiveAccounting(state.goal);
 			}
 			await this.#commitState(state, { persist: state.enabled ? "goal" : "goal_paused" });
-			if (shouldSteer) {
-				await this.#sendBudgetLimitSteer(state.goal);
-			}
 			return state;
 		});
 	}
@@ -369,11 +365,12 @@ export class GoalRuntime {
 
 	#createGoalState(objective: string, tokenBudget: number | undefined): GoalModeState {
 		const now = this.#now();
+		void tokenBudget;
 		const goal: Goal = {
 			id: String(Snowflake.next()),
 			objective,
 			status: "active",
-			tokenBudget,
+			tokenBudget: undefined,
 			tokensUsed: 0,
 			timeUsedSeconds: 0,
 			createdAt: now,
@@ -385,7 +382,7 @@ export class GoalRuntime {
 	async createGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
 		const objective = input.objective.trim();
 		if (!objective) throw new Error("objective is required when op=create");
-		validateTokenBudget(input.tokenBudget);
+		void input.tokenBudget;
 		return await this.#withAccounting(async () => {
 			const existing = this.#host.getState();
 			if (existing?.goal && existing.goal.status !== "dropped" && existing.goal.status !== "complete") {
@@ -402,7 +399,7 @@ export class GoalRuntime {
 	async replaceGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
 		const objective = input.objective.trim();
 		if (!objective) throw new Error("objective is required when op=replace");
-		validateTokenBudget(input.tokenBudget);
+		void input.tokenBudget;
 		return await this.#withAccounting(async () => {
 			const existing = this.#host.getState();
 			if (!existing?.enabled || !isAccountingStatus(existing.goal)) {
@@ -426,6 +423,7 @@ export class GoalRuntime {
 			state.mode = "active";
 			state.reason = undefined;
 			state.goal.status = "active";
+			state.goal.tokenBudget = undefined;
 			state.goal.updatedAt = this.#now();
 			this.#budgetReportedFor = undefined;
 			this.#markActiveAccounting(state.goal);
