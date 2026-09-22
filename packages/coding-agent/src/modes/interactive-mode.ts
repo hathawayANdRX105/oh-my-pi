@@ -1883,8 +1883,19 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#exitGoalMode({ reason: "dropped", silent: true });
 				return;
 			}
+			const wasEnabled = this.goalModeEnabled;
 			this.goalModeEnabled = event.state?.enabled === true;
 			this.goalModePaused = event.state?.enabled !== true && event.state?.goal?.status === "paused";
+			// Agent-side goal({op:"create"}) enables goal mode without /goal.
+			// Mirror #enterGoalMode tool activation so complete/resume/drop stay available.
+			if (this.goalModeEnabled && !wasEnabled) {
+				const previousTools = this.session.getActiveToolNames().filter(name => name !== "goal");
+				this.#goalModePreviousTools = previousTools;
+				await this.session.setActiveToolsByName([...new Set([...previousTools, "goal"])]);
+				if (this.session.isStreaming) {
+					await this.session.sendGoalModeContext({ deliverAs: "steer" });
+				}
+			}
 			if (!event.state?.enabled) {
 				this.#cancelGoalContinuation();
 			}
@@ -1967,7 +1978,10 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (this.goalModeEnabled || this.goalModePaused) {
 			if (this.#goalModePreviousTools !== undefined) {
-				await this.session.setActiveToolsByName(this.#goalModePreviousTools);
+				const nextTools = this.session.settings.get("goal.enabled")
+					? [...new Set([...this.#goalModePreviousTools, "goal"])]
+					: this.#goalModePreviousTools;
+				await this.session.setActiveToolsByName(nextTools);
 			}
 			this.session.setGoalModeState(undefined);
 			this.goalModeEnabled = false;
@@ -2238,7 +2252,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}): Promise<void> {
 		const previousTools = this.#goalModePreviousTools;
 		if (this.goalModeEnabled && previousTools) {
-			await this.session.setActiveToolsByName(previousTools);
+			// Keep goal callable after exit so the agent can create the next goal.
+			const nextTools = this.session.settings.get("goal.enabled")
+				? [...new Set([...previousTools, "goal"])]
+				: previousTools;
+			await this.session.setActiveToolsByName(nextTools);
 		}
 		const currentState = this.session.getGoalModeState();
 		if (options?.reason === "completed") {

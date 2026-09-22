@@ -489,8 +489,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	const enableLsp = session.enableLsp ?? true;
 	let requestedTools = toolNames && toolNames.length > 0 ? normalizeToolNames(toolNames) : undefined;
 	const goalEnabled = session.settings.get("goal.enabled");
-	const goalModeActive = goalEnabled && session.getGoalModeState?.()?.enabled === true;
-	if (goalModeActive && requestedTools && !requestedTools.includes("goal")) {
+	// Always expose goal when enabled so the agent can create/start goals itself.
+	// Goal mode no longer requires the user to /goal first.
+	if (goalEnabled && requestedTools && !requestedTools.includes("goal")) {
 		requestedTools = [...requestedTools, "goal"];
 	}
 	const backends = resolveEvalBackends(session);
@@ -595,7 +596,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
 	const isToolAllowed = (name: string) => {
-		if (name === "goal") return goalEnabled && goalModeActive;
+		if (name === "goal") return goalEnabled;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
 		if (name === "eval") return allowEval;
@@ -642,7 +643,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 						.filter(([name]) => isToolAllowed(name))
 						.map(([name, factory]) => [name, factory] as const),
 					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
-					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
+					...(goalEnabled ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 				];
 
 	const baseResults = await Promise.all(
