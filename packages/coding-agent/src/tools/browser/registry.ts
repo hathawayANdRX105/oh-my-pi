@@ -125,10 +125,12 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 			key: browserKey(kind),
 			kind,
 			browser,
+			pid: browser.process()?.pid,
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
 		};
 	}
+
 	if (kind.kind === "connected") {
 		const cdpUrl = normalizeConnectedCdpUrl(kind.cdpUrl);
 		await waitForCdp(cdpUrl, 5_000, opts.signal);
@@ -238,6 +240,10 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: { kill: boolean
 				logger.debug("Failed to close headless browser", { error: (err as Error).message });
 			}
 		}
+		// `browser.close()` can return while the Chromium tree it spawned keeps
+		// running (the leak behind a session's dispose timing out on CDP). The
+		// pid recorded at launch is the only handle we have on that tree.
+		if (opts.kill && handle.pid !== undefined) await gracefulKillTreeOnce(handle.pid);
 		return;
 	}
 	if (handle.kind.kind === "connected") {
@@ -260,7 +266,39 @@ async function disposeBrowserHandle(handle: BrowserHandle, opts: { kill: boolean
 	if (opts.kill && handle.pid !== undefined) await gracefulKillTreeOnce(handle.pid);
 }
 
+/**
+ * Dispose every browser handle nobody holds a tab on. `releaseTabsForOwner`
+ * only walks `tabs`, so a handle whose refCount already hit 0 — an aborted
+ * launch, a tab closed without `kill`, a creator session that exited while a
+ * reuser kept no record — is invisible to session teardown and its Chromium
+ * tree outlives the process. (Issue #3963, the half the owner walk misses.)
+ *
+ * Deliberately skips refCount > 0: the map is module-global and shared across
+ * sessions, so closing a live handle here would kill another session's tabs.
+ */
+export async function disposeUnreferencedBrowsers(opts: { kill: boolean }): Promise<number> {
+	const stale = [...browsers.values()].filter(handle => handle.refCount === 0);
+	let disposed = 0;
+	for (const handle of stale) {
+		if (browsers.get(handle.key) !== handle) continue;
+		browsers.delete(handle.key);
+		// Tree-kill only what we launched ourselves. A spawned handle's pid may
+		// belong to a pre-existing app we merely attached to (`findReusableCdp`
+		// records the foreign pid), and killing the user's own browser because a
+		// session disposed is not ours to do. Spawned/connected stay
+		// disconnect-only, matching close-without-kill semantics.
+		await disposeBrowserHandle(handle, { kill: opts.kill && handle.kind.kind === "headless" });
+		disposed++;
+	}
+	return disposed;
+}
+
 /** Test-only accessor for the module-global browsers map. */
 export function getBrowsersMapForTest(): ReadonlyMap<string, BrowserHandle> {
 	return browsers;
+}
+
+/** True while `handle` is still the registry entry for its key. */
+export function isBrowserRegistered(handle: BrowserHandle): boolean {
+	return browsers.get(handle.key) === handle;
 }
