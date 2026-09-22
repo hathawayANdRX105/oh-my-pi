@@ -1,13 +1,13 @@
 # chore(coding-agent): measure what one omp process actually keeps resident
 
-基线：fork/main `bbb6233916`    worktree：`.wt/session-daemon-0-heap`    分支：`chore/session-daemon-heap-baseline`
+基线：fork/main `b672cf020c`    worktree：`.wt/session-daemon-0-heap`    分支：`chore/session-daemon-heap-baseline`
 关联：无 issue。用户设想：N 个 omp 客户端共用一个 200–300MB 运行时，只为每个会话另付会话状态。本阶段不实现 daemon，只回答这个设想省的是不是运行时。
 
 ## 0 出发前：基线与禁区
 
-- 基线：`bbb6233916`（`fix( catalog ): 补回 wildtoken xhigh thinking 规则`，author `hathawayandrx105`）。当前检出的 `main` 就是这个提交。
-- worktree：`git worktree add .wt/session-daemon-0-heap -b chore/session-daemon-heap-baseline bbb6233916`。禁止在根工作树改文件。
-- 图：`cg status` 建在 `fix-stream-retry-stability` 的 `f70e4f1570`，与本基线不一致。本阶段不改符号，不要求 `cg refresh`；引用符号前用 `git grep` 在 `bbb6233916` 上复核。
+- 基线：`b672cf020c`（三阶段任务书已经进入 fork/main）。
+- worktree：`git worktree add .wt/session-daemon-0-heap -b chore/session-daemon-heap-baseline b672cf020c`。禁止在根工作树改文件。
+- 图：已在 `main` 的 `b672cf020c` 执行 `cg refresh`；图包含 55297 nodes、585312 edges、3574 files。开工时仍须 `cg status`，若 commit 不一致先 refresh。
 - 禁改区：`.githooks/`、`packages/catalog/src/models.json`、任何会话/TUI/broker 实现。
 
 ## 1 在什么地方
@@ -29,6 +29,7 @@
   - 已有 daemon：`packages/coding-agent/src/launch/broker.ts` `DaemonBroker`。按项目一个 socket（`launch/paths.ts` `daemonBrokerEndpoint`），监督的是 `ManagedDaemon` 子进程，不是 `AgentSession`。
 - 技术栈：Bun。`Bun.generateHeapSnapshot()` 或 `process.memoryUsage()`。禁止加依赖。禁止为了测量去改运行时。
 - 调用面：不改符号，无 `cg callers` 义务。
+- 已核实调用面：本阶段不改符号。`cg callers setProjectDir` 当前返回 50 个结果，其中生产调用集中在 `startup-cwd.ts`、`main.ts`、`interactive-mode.ts`、`builtin-lifecycle.ts`，其余大部分为测试；这些只作为阶段 2 的基线，不在本阶段修改。
 - 思路：同一台机器上起两个进程。A 是刚启动、空会话。B 是打开一个已知的长会话（journal 大、工具调用多）。对 A、B 各取 RSS 和 heap snapshot，按 retainer 归成四桶：运行时/模块图、模型与 prompt 静态数据、MCP 与 embedder 与 browser、会话对象（消息、journal 索引、工具状态）。A 与 B 的差就是会话可变成本。A 本身才是「每多一个客户端就要再付的运行时」。
 
 不选的做法：用现在机器上那 7 个 omp 的 RSS（当时约 168–267MB）当结论。那些进程混着会话、子 agent 和编译缓存，拆不开。

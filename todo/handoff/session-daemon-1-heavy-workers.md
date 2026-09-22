@@ -1,13 +1,13 @@
 # feat(coding-agent): share MCP, embedder, and browser across omp processes
 
-基线：fork/main `bbb6233916`    worktree：`.wt/session-daemon-1-heavy`    分支：`feat/session-daemon-heavy-workers`
+基线：fork/main `b672cf020c`    worktree：`.wt/session-daemon-1-heavy`    分支：`feat/session-daemon-heavy-workers`
 关联：无 issue。前置：`todo/handoff/session-daemon-0-heap-baseline.md` 的回执判定不是「停」。本阶段不把会话搬进 daemon。客户端仍是完整 omp 进程，只把三块重资源交给已经存在的 broker。
 
 ## 0 出发前：基线与禁区
 
-- 基线：`bbb6233916`。
-- worktree：`git worktree add .wt/session-daemon-1-heavy -b feat/session-daemon-heavy-workers bbb6233916`。禁止在根工作树改文件。
-- 图：开工前在 worktree 里 `cg build` 或 `cg refresh`，使 graph commit 等于 `bbb6233916`。之后 `cg callers` 才有效。
+- 基线：`b672cf020c`。
+- worktree：`git worktree add .wt/session-daemon-1-heavy -b feat/session-daemon-heavy-workers b672cf020c`。禁止在根工作树改文件。
+- 图：已在 `main` 的 `b672cf020c` 刷新。开工时 `cg status` 必须仍指向该基线，否则先 `cg refresh`。
 - 禁改区：`.githooks/`、`packages/catalog/src/models.json`、`AgentSession` 的对话循环、TUI 渲染。
 
 ## 1 在什么地方
@@ -15,10 +15,12 @@
 - `packages/coding-agent/src/launch/broker.ts`    改：在现有 `ManagedDaemon` 之外登记三类共享所有者：MCP、embedder、browser。复用 lease、socket、idle grace，不新起一套进程模型。
 - `packages/coding-agent/src/launch/protocol.ts`    改：加这三类的 request/snapshot 类型。
 - `packages/coding-agent/src/launch/client.ts`    改：客户端按 project dir 拿到这三类的句柄。
-- `packages/coding-agent/src/mcp/manager.ts`    改：`MCPManager` 连接已有 broker 里的 server 进程，而不是每个 omp 各 spawn 一份。
+- `packages/coding-agent/src/mcp/manager.ts`    改：保留 `MCPManager` 对外能力，把进程所有权和 transport 下沉为 broker-backed client。
+- `packages/coding-agent/src/mcp/loader.ts`、`packages/coding-agent/src/sdk.ts`、`packages/coding-agent/src/modes/acp/acp-agent.ts`、`packages/coding-agent/src/modes/controllers/mcp-command-controller.ts`、`packages/coding-agent/src/slash-commands/helpers/mcp.ts`    改或确认不改：这些是真实的 `new MCPManager(...)` 调用点；逐个切到同一个 broker-backed 构造路径，禁止遗漏临时 manager 和 ACP 路径。
 - `packages/coding-agent/src/mnemopi/embed-client.ts`    改：`MNEMOPI_EMBED_WORKER_ARG` 子进程改由 broker 持有，客户端只发 embed 请求。
-- `packages/coding-agent/src/tools/browser/registry.ts`    改：`acquireBrowser` 优先附着 broker 已启动的 browser；本进程不再各养一棵 Chromium。
-- `packages/coding-agent/test/launch/shared-heavy-workers.test.ts`    新建：两个客户端附着同一 MCP / 同一 browser pid。
+- `packages/coding-agent/src/tools/browser/registry.ts`、`packages/coding-agent/src/tools/browser.ts`、`packages/coding-agent/src/tools/read-pdf.ts`、`packages/coding-agent/src/web/search/providers/browser-page.ts`    改或确认不改：graph 只识别到 `browser.ts` 的直接边，grep 另确认 `read-pdf.ts` 和 `browser-page.ts` 也直接调用 `acquireBrowser`；所有路径必须获得相同的 broker ownership 语义。
+- `packages/coding-agent/src/tools/browser/shared-daemon.ts`    复用：该文件已通过 `daemonClientForProject` 连接 broker，优先扩展现有协议，不再造第二套 browser daemon。
+- `packages/coding-agent/test/launch/shared-heavy-workers.test.ts`    新建：两个客户端附着同一 MCP、embedder 和 browser pid。
 - 不动：`packages/coding-agent/src/session/agent-session.ts` 的 turn 循环、`packages/tui/**`、`DaemonBroker` 现有的 dev-server/PTY 监督语义。
 
 ## 2 参考什么内容，技术栈，思路
@@ -31,7 +33,11 @@
   - jcode 只借生命周期，不借代码：`jcode` `crates/jcode-app-core/src/server/socket.rs` 的 flock + stale socket reap + ready-fd。omp 已经有 `FileLock` lease 和 `LEASE_HANDOFF_GRACE_MS`，不要再移植一套。
   - embedder 现状：`mnemopi/embed-worker.ts` 是每个父进程一个 `__omp_worker_mnemopi_embed`。browser 现状：`tools/browser/registry.ts` `acquireBrowser` 在调用进程里起 Chromium。
 - 技术栈：Bun + 现有 `node:net` + `@oh-my-pi/pi-natives` `FileLock`。禁止新依赖。禁止共享 JS 堆的方案（`SharedArrayBuffer` 装不下 `MCPManager`）。
-- 调用面：改前跑 `cg callers MCPManager`、`cg callers acquireBrowser`、`cg callers daemonClientForProject`，再 `git grep` 到真实行。每个调用者标明改 / 不改。预期不改：只读 snapshot 的 `omp ps`、PTY daemon 的 start/stop。
+- 调用面已用当前 graph + grep 预查：
+  - `acquireBrowser` 的 graph 结果包含 `tools/browser.ts` 与既有 lifecycle tests；grep 补出 `tools/read-pdf.ts`、`web/search/providers/browser-page.ts`。
+  - `new MCPManager(...)` 实际存在于 `mcp/loader.ts`、`mcp/manager.ts`、`modes/acp/acp-agent.ts`、`mcp-command-controller.ts`、`sdk.ts`、`slash-commands/helpers/mcp.ts`。
+  - `daemonClientForProject(...)` 已被 blob broker、LSP mux、browser shared daemon、hub launch、`omp ps` 使用；这些调用保持原语义。图未索引该函数，故以上边由 grep 确认。
+  - 开工时仍须对 qualified `MCPManager`、`acquireBrowser` 跑 `cg callers`，并逐行 grep 复核。
 - 思路：broker 进程持有子进程，客户端持有 RPC 句柄。第二个 omp 启动时连接同一个 project socket，发现 MCP server / embed worker / browser 已在，就附着，不 spawn。最后一个客户端断开后沿用 broker 现有 idle grace，到期杀掉这三类子进程。
 
 不选的做法：把三个子进程做成全局单例。MCP 和 browser 带项目目录与登录态，必须跟现有 broker 一样按 project dir 分 scope。
@@ -71,9 +77,9 @@
 本地只跑跟改动直接相关的测试文件，不跑全量。
 
 - [ ] `bun test packages/coding-agent/test/launch/shared-heavy-workers.test.ts` 通过 — `<SHA>`
-- [ ] `git diff --name-only bbb6233916..HEAD` 只有 §1 白名单 — `<SHA>`
+- [ ] `git diff --name-only b672cf020c..HEAD` 只有 §1 白名单 — `<SHA>`
 - [ ] 两个手动 omp 的 MCP server pid 相同，命令和输出在 §6 — `<SHA>`
-- [ ] `cg changes bbb6233916` 非 critical — 回执写实际 risk
+- [ ] `cg changes b672cf020c` 非 critical — 回执写实际 risk
 
 ## 6 模拟测试功能(smoke)
 
