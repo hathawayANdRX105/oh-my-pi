@@ -30,6 +30,13 @@ const RUNTIME_ONLY_PROVIDERS = new Set([
 	// User-configured models.yml provider pointing at
 	// https://inference-api.nousresearch.com/v1 (NousResearch inference API).
 	"nous",
+	// User-configured models.yml provider pointing at the local wildtoken
+	// gateway (http://localhost:3100/v1, OpenAI-compatible; compat rules
+	// imported from providers/wildtoken.kdl).
+	"wildtoken",
+	// User-configured models.yml provider pointing at a self-hosted new-api
+	// gateway (OpenAI-compatible).
+	"new-api",
 ]);
 
 function collectReferencedProviders(): Map<string, string> {

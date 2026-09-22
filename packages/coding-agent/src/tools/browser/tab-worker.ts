@@ -1087,14 +1087,19 @@ async function createTrackedHeadlessPage(browser: Browser, reportTarget: (target
 	// Chrome 两条路都通，优先用标准 session，失败回落主连接。
 	let send: (method: string, params?: object) => Promise<unknown>;
 	let detach: (() => Promise<void>) | undefined;
-	const browserSession = await browser.target().createCDPSession().catch(() => null);
+	const browserSession = await browser
+		.target()
+		.createCDPSession()
+		.catch(() => null);
 	if (browserSession) {
 		send = browserSession.send.bind(browserSession);
 		detach = browserSession.detach.bind(browserSession);
 	} else {
-		const connection = (browser as unknown as {
-			_connection?: { send(method: string, params?: object): Promise<unknown> };
-		})._connection;
+		const connection = (
+			browser as unknown as {
+				_connection?: { send(method: string, params?: object): Promise<unknown> };
+			}
+		)._connection;
 		if (!connection) throw new ToolError("No CDP channel available to create a headless target");
 		send = connection.send.bind(connection);
 	}
@@ -1477,9 +1482,11 @@ export class WorkerCore {
 		if (targets.some(target => String(target.type()) === "page")) return targets;
 		// ponytail: 同 createTrackedHeadlessPage——obscura 的 discovery 不重发已有 page，
 		// createTarget 触发一次枚举后 puppeteer 才看得到。Chrome 上有 page 时直接返回。
-		const connection = (this.#browser as unknown as {
-			_connection?: { send(method: string, params?: object): Promise<unknown> };
-		})._connection;
+		const connection = (
+			this.#browser as unknown as {
+				_connection?: { send(method: string, params?: object): Promise<unknown> };
+			}
+		)._connection;
 		if (!connection) return targets;
 		await connection.send("Target.createTarget", { url: "about:blank" }).catch(() => {});
 		const { promise: enumerated, resolve } = Promise.withResolvers<void>();

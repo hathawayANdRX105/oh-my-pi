@@ -467,9 +467,11 @@ export async function pickElectronTarget(
 	// 启用后不重发已存在的 page 目标（真 Chrome 会重发全部），导致 puppeteer 的
 	// targets()/pages() 双双为空。createTarget 会触发它枚举一次，之后 getTargets
 	// 才返回真实 page 列表。Chrome 上 discovery 命中就走不到这里。
-	const connection = (browser as unknown as {
-		_connection?: { send(method: string, params?: object): Promise<unknown> };
-	})._connection;
+	const connection = (
+		browser as unknown as {
+			_connection?: { send(method: string, params?: object): Promise<unknown> };
+		}
+	)._connection;
 	if (connection) {
 		await connection.send("Target.createTarget", { url: "about:blank" }).catch(() => {});
 		const { promise: enumerated, resolve } = Promise.withResolvers<void>();
