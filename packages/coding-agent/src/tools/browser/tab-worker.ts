@@ -1082,13 +1082,28 @@ async function targetIdForPage(page: Page): Promise<string> {
 }
 
 async function createTrackedHeadlessPage(browser: Browser, reportTarget: (targetId: string) => void): Promise<Page> {
-	const session = await browser.target().createCDPSession();
+	// ponytail: obscura 不支持 attach 到 browser target（createCDPSession 直接报错），
+	// 但主连接本身就能发 Target.createTarget——obscura 收到后会枚举出 page。
+	// Chrome 两条路都通，优先用标准 session，失败回落主连接。
+	let send: (method: string, params?: object) => Promise<unknown>;
+	let detach: (() => Promise<void>) | undefined;
+	const browserSession = await browser.target().createCDPSession().catch(() => null);
+	if (browserSession) {
+		send = browserSession.send.bind(browserSession);
+		detach = browserSession.detach.bind(browserSession);
+	} else {
+		const connection = (browser as unknown as {
+			_connection?: { send(method: string, params?: object): Promise<unknown> };
+		})._connection;
+		if (!connection) throw new ToolError("No CDP channel available to create a headless target");
+		send = connection.send.bind(connection);
+	}
 	let targetId: string;
 	try {
-		({ targetId } = await session.send("Target.createTarget", { url: "about:blank" }));
+		({ targetId } = (await send("Target.createTarget", { url: "about:blank" })) as { targetId: string });
 		reportTarget(targetId);
 	} finally {
-		await session.detach().catch(() => undefined);
+		await detach?.().catch(() => undefined);
 	}
 	const existing = browser.targets().find(target => privateTargetId(target) === targetId);
 	const target =
@@ -1449,11 +1464,28 @@ export class WorkerCore {
 
 	async #findAttachedTarget(targetId: string): Promise<Target> {
 		if (!this.#browser) throw new ToolError("Browser is not connected");
-		for (const target of this.#browser.targets()) {
+		for (const target of await this.#listTargets()) {
 			if ((await targetIdForTarget(target).catch(() => "")) !== targetId) continue;
 			return target;
 		}
 		throw new ToolError(`Target ${targetId} is no longer available on the attached browser`);
+	}
+
+	/** Current targets; on obscura, force its lazy enumeration before puppeteer can see pages. */
+	async #listTargets(): Promise<Target[]> {
+		const targets = this.#browser.targets();
+		if (targets.some(target => String(target.type()) === "page")) return targets;
+		// ponytail: 同 createTrackedHeadlessPage——obscura 的 discovery 不重发已有 page，
+		// createTarget 触发一次枚举后 puppeteer 才看得到。Chrome 上有 page 时直接返回。
+		const connection = (this.#browser as unknown as {
+			_connection?: { send(method: string, params?: object): Promise<unknown> };
+		})._connection;
+		if (!connection) return targets;
+		await connection.send("Target.createTarget", { url: "about:blank" }).catch(() => {});
+		const { promise: enumerated, resolve } = Promise.withResolvers<void>();
+		setTimeout(resolve, 500);
+		await enumerated;
+		return this.#browser.targets();
 	}
 
 	/**
