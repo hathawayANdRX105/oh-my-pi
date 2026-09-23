@@ -180,6 +180,7 @@ export class BrokerMnemopiEmbedHandle implements MnemopiEmbedWorkerHandle {
 					texts: message.texts,
 					batchSize: message.batchSize,
 				})) as Extract<DaemonRpcResult, { op: "embed" }>;
+				this.#emit({ type: "vectors", id: message.id, vectors: result.vectors });
 			}
 		} catch (error) {
 			this.#emit({ type: "error", id: message.id, error: error instanceof Error ? error.message : String(error) });

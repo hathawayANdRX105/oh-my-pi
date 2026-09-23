@@ -101,7 +101,7 @@ async function stopBroker(client: DaemonBrokerClient, broker: Promise<void>): Pr
 }
 
 /** Narrow a broker RPC result to the union member matching the sent operation. */
-function resultOf<T extends DaemonRpcResult["op"]>(value: DaemonRpcResult, op: T): Extract<DaemonRpcResult, { op: T }> {
+function resultOf<T extends DaemonRpcResult["op"]>(value: DaemonRpcResult, _op: T): Extract<DaemonRpcResult, { op: T }> {
 	return value as Extract<DaemonRpcResult, { op: T }>;
 }
 
