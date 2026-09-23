@@ -12,7 +12,12 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../../src/launch/client";
 import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
-import { DAEMON_IDLE_GRACE_ENV, DAEMON_PROJECT_DIR_ENV, DAEMON_RUNTIME_DIR_ENV, type DaemonRpcResult } from "../../src/launch/protocol";
+import {
+	DAEMON_IDLE_GRACE_ENV,
+	DAEMON_PROJECT_DIR_ENV,
+	DAEMON_RUNTIME_DIR_ENV,
+	type DaemonRpcResult,
+} from "../../src/launch/protocol";
 import { sharedBrowserDaemonName } from "../../src/tools/browser/shared-daemon";
 
 /**
@@ -101,7 +106,10 @@ async function stopBroker(client: DaemonBrokerClient, broker: Promise<void>): Pr
 }
 
 /** Narrow a broker RPC result to the union member matching the sent operation. */
-function resultOf<T extends DaemonRpcResult["op"]>(value: DaemonRpcResult, _op: T): Extract<DaemonRpcResult, { op: T }> {
+function resultOf<T extends DaemonRpcResult["op"]>(
+	value: DaemonRpcResult,
+	_op: T,
+): Extract<DaemonRpcResult, { op: T }> {
 	return value as Extract<DaemonRpcResult, { op: T }>;
 }
 

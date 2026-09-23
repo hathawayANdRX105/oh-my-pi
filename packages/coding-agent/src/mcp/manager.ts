@@ -258,7 +258,11 @@ class BrokerMCPTransport implements MCPTransport {
 		this.#client = client;
 	}
 
-	async request<T = unknown>(method: string, params?: Record<string, unknown>, options?: MCPRequestOptions): Promise<T> {
+	async request<T = unknown>(
+		method: string,
+		params?: Record<string, unknown>,
+		options?: MCPRequestOptions,
+	): Promise<T> {
 		let result: Extract<DaemonRpcResult, { op: "mcp-request" }>;
 		try {
 			const client = await this.#client();
@@ -307,7 +311,8 @@ class BrokerMCPTransport implements MCPTransport {
 	 */
 	#markLost(error: unknown): void {
 		if (this.#lost) return;
-		if (error instanceof DaemonBrokerRejectedError && !/is not connected; ensure it first/.test(error.message)) return;
+		if (error instanceof DaemonBrokerRejectedError && !/is not connected; ensure it first/.test(error.message))
+			return;
 		this.#lost = true;
 		this.onClose?.();
 	}
@@ -390,7 +395,6 @@ export class MCPManager {
 	 * transports.
 	 */
 	readonly #brokerRouted: boolean;
-
 
 	constructor(
 		private cwd: string,

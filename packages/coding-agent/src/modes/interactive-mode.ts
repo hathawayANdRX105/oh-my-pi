@@ -4002,10 +4002,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		reason?: "completed" | "paused" | "dropped";
 	}): Promise<void> {
 		const previousTools = this.#goalModePreviousTools;
-		if (this.goalModeEnabled && previousTools) {
-			const nextTools = this.session.settings.get("goal.enabled")
-				? [...new Set([...previousTools, "goal"])]
-				: previousTools;
+		if (previousTools) {
+			const nextTools =
+				options?.reason !== "completed" &&
+				options?.reason !== "dropped" &&
+				this.session.settings.get("goal.enabled")
+					? [...new Set([...previousTools, "goal"])]
+					: previousTools;
 			await this.session.setActiveToolsByName(nextTools);
 		}
 		const currentState = this.session.getGoalModeState();
@@ -4889,12 +4892,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showStatus("Goal is already complete.");
 			return;
 		}
-		// Local invariant: goal budgets are always absent.
-		void rawBudget;
-		await this.session.goalRuntime.onBudgetMutated(undefined);
+		const tokenBudget = rawBudget.trim().toLowerCase() === "off" ? undefined : Number(rawBudget);
+		await this.session.goalRuntime.onBudgetMutated(tokenBudget);
 		this.#resetGoalContinuationSuppression();
 		this.#scheduleGoalContinuation();
-		this.showStatus("Goal budget is hard-locked off in this build (numeric budgets disabled).");
+		this.showStatus(
+			tokenBudget === undefined ? "Goal token budget disabled." : `Goal token budget set to ${tokenBudget}.`,
+		);
 	}
 
 	async handleGoalModeCommand(

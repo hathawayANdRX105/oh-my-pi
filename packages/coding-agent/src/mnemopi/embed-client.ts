@@ -163,7 +163,8 @@ export class BrokerMnemopiEmbedHandle implements MnemopiEmbedWorkerHandle {
 			try {
 				client = await daemonClientForProject(this.#projectDir);
 			} catch (error) {
-				for (const handler of this.#errorHandlers) handler(error instanceof Error ? error : new Error(String(error)));
+				for (const handler of this.#errorHandlers)
+					handler(error instanceof Error ? error : new Error(String(error)));
 				return;
 			}
 			this.#client = client;

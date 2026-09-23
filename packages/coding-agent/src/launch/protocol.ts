@@ -59,7 +59,13 @@ export type DaemonRpcResult =
 	| { op: "ping"; projectDir: string }
 	| { op: "embed-init"; ready: boolean; pid?: number }
 	| { op: "embed"; vectors: number[][] }
-	| { op: "mcp-ensure"; attached: boolean; serverInfo: Record<string, unknown>; capabilities: Record<string, unknown>; instructions?: string }
+	| {
+			op: "mcp-ensure";
+			attached: boolean;
+			serverInfo: Record<string, unknown>;
+			capabilities: Record<string, unknown>;
+			instructions?: string;
+	  }
 	| { op: "mcp-request"; result?: unknown; notified?: boolean }
 	| { op: "start"; daemon: DaemonSnapshot; readyTimedOut: boolean }
 	| { op: "list"; daemons: DaemonSnapshot[] }
@@ -345,7 +351,9 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				method: stringValue(source.method, "operation.method"),
 				params: source.params === undefined ? undefined : record(source.params, "operation.params"),
 				notification:
-					source.notification === undefined ? undefined : booleanValue(source.notification, "operation.notification"),
+					source.notification === undefined
+						? undefined
+						: booleanValue(source.notification, "operation.notification"),
 			};
 		case "start":
 			return {
@@ -407,7 +415,11 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 		case "ping":
 			return { op: "ping", projectDir: stringValue(source.projectDir, "result.projectDir") };
 		case "embed-init":
-			return { op: "embed-init", ready: booleanValue(source.ready, "result.ready"), pid: optionalNumber(source.pid, "result.pid") };
+			return {
+				op: "embed-init",
+				ready: booleanValue(source.ready, "result.ready"),
+				pid: optionalNumber(source.pid, "result.pid"),
+			};
 		case "embed":
 			return { op: "embed", vectors: numberMatrix(source.vectors, "result.vectors") };
 		case "mcp-ensure":
