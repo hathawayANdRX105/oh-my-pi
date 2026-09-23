@@ -405,6 +405,8 @@ import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
 const PLAN_MODE_REMINDER_MAX = 3;
+/** Objective prefix of goals auto-created by the todo list; matched on auto-complete. */
+const TODO_GOAL_OBJECTIVE_PREFIX = "Complete todo list: ";
 const POST_PROMPT_DRAIN_TIMEOUT_MS = 5_000;
 const AGENT_START_POLICY_MAX_ATTEMPTS = 3;
 
@@ -1391,6 +1393,7 @@ export class AgentSession {
 			planModeEnabled: () => this.#planModeState?.enabled === true,
 			prewalkWillHandoff: () => this.#prewalk.willHandoff,
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
+			onAllTodosCompleted: () => this.#completeTodoLinkedGoal(),
 		};
 		this.#todo = new TodoTracker(todoHost);
 		this.#goalContinuation = new GoalContinuation({
@@ -2652,6 +2655,8 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
+	/** Origin of the prompt that started the current agent run; drives goal auto-resume. */
+	#lastPromptOrigin: "user" | "system" = "system";
 	/**
 	 * Classifier-refusal turn pruned from active context at settle (#3591).
 	 * Retained until the next run starts so post-settle readers
@@ -3078,8 +3083,14 @@ export class AgentSession {
 			this.#activeAgentPromptGeneration = eventPromptGeneration;
 			this.#prunedTerminalRefusal = undefined;
 			this.#advisors.onPrimaryAgentStart();
-			this.#emitRunState("running");
-			this.#maintenance.noteTurnStarted();
+			if (this.#lastPromptOrigin === "user") {
+				const goalState = this.getGoalModeState();
+				if (goalState?.goal.status === "paused") {
+					void this.#goalRuntime.resumeGoal().catch(err => {
+						logger.debug("goal auto-resume on user turn failed", { err });
+					});
+				}
+			}
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
@@ -3409,6 +3420,7 @@ export class AgentSession {
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
 				if (toolName === "todo" && !isError && details && this.#todo.onTodoResultDetails(details, toolCallId)) {
 					this.#scheduleReplanTitleRefresh();
+					this.#linkGoalToTodoList(details);
 				}
 				if (toolName === "todo" && isError) {
 					const errorText = content.find(part => part.type === "text")?.text;
@@ -4093,9 +4105,10 @@ export class AgentSession {
 		if (options.terminalTextAnswer && !activeGoal) return false;
 		return this.#scheduleAutoContinuePrompt(options.generation);
 	}
-
 	#scheduleAutoContinuePrompt(generation: number): boolean {
 		const continuePrompt = async () => {
+			// System-origin turn: a paused goal must not auto-resume on synthetic prompts.
+			this.#lastPromptOrigin = "system";
 			// Compaction summarizes away the first-message eager preludes, so re-assert the
 			// delegate-via-tasks / phased-todo reminders on this auto-resumed turn. This runs
 			// at invocation (past the abort check below), so an aborted continuation queues
@@ -6369,6 +6382,7 @@ export class AgentSession {
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		this.#lastPromptOrigin = "user";
 		return this.#admitSubmission(() => this.#prompt(text, options));
 	}
 
@@ -6634,6 +6648,7 @@ export class AgentSession {
 		// turn against the disconnected session nor lose the session to the
 		// interrupted-turn resume once compaction ends.
 		const release = await this.#maintenance.waitForManualCompactionCleanup();
+		this.#lastPromptOrigin = "system";
 		const outcome: PromptDispatchOutcome = { sessionClaimed: false };
 		if (!release) return this.#dispatchCustomPrompt(message, options, outcome);
 		try {
@@ -7512,6 +7527,7 @@ export class AgentSession {
 		}
 
 		const queuedMessages = [...this.#pendingNextTurnMessages];
+		this.#lastPromptOrigin = "system";
 		this.#pendingNextTurnMessages = [];
 		const message = queuedMessages[queuedMessages.length - 1];
 		if (!message) {
@@ -8078,6 +8094,28 @@ export class AgentSession {
 
 	#buildReplanTitleContext(): string {
 		return buildReplanTitleContext(this.agent.state.messages);
+	}
+	/** 建 todo 列表时若没有 active goal,自动挂一个(前缀标记);
+	 * goal continuation 会持续驱动直到列表全部完成。既有 goal(active/paused)不动。 */
+	#linkGoalToTodoList(details: Record<string, unknown>): void {
+		if (this.#goalModeState?.enabled) return;
+		const phases = Array.isArray(details.phases) ? (details.phases as Array<{ name?: unknown }>) : [];
+		const names = phases.map(phase => (typeof phase.name === "string" ? phase.name : "")).filter(Boolean);
+		const objective = `${TODO_GOAL_OBJECTIVE_PREFIX}${names.join(", ") || "the todo list"}`;
+		void this.#goalRuntime.createGoal({ objective }).catch(err => {
+			// 已有 goal 会挡创建(createGoal 守卫);尊重现状,不强写。
+			logger.debug("todo -> goal link skipped", { err });
+		});
+	}
+
+	/** todos 全完成 → 自动 complete 由 todo 联动创建的 goal(前缀匹配);用户 goal 不动。 */
+	#completeTodoLinkedGoal(): void {
+		const state = this.#goalModeState;
+		if (state?.enabled !== true || state.goal.status !== "active") return;
+		if (!state.goal.objective.startsWith(TODO_GOAL_OBJECTIVE_PREFIX)) return;
+		void this.#goalRuntime.completeGoalFromTool().catch(err => {
+			logger.debug("todo -> goal auto-complete failed", { err });
+		});
 	}
 
 	#scheduleReplanTitleRefresh(): void {

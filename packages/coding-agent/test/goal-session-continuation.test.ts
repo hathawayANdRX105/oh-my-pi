@@ -289,4 +289,85 @@ describe("session-layer goal continuation", () => {
 		expect(state?.goal.status).toBe("paused");
 		expect(session.isStreaming).toBe(false);
 	});
+
+	it("auto-resumes a paused goal when the user submits a new prompt", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		await session.goalRuntime.pauseGoal();
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+		mockTextStop("resuming");
+
+		// 停止 → 运行:用户源 turn 自动把 paused goal 恢复 active。
+		await session.prompt("keep going");
+		await session.waitForIdle();
+
+		const state = session.getGoalModeState();
+		expect(state?.enabled).toBe(true);
+		expect(state?.goal.status).toBe("active");
+	});
+
+	it("does not auto-resume a paused goal on a system-origin (custom) turn", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		await session.goalRuntime.pauseGoal();
+		mockTextStop("reminder ack");
+
+		// 系统源 turn(todo reminder / 隐藏消息)不得把 paused goal 拉回 active。
+		await session.promptCustomMessage({
+			customType: "todo-reminder",
+			content: [{ type: "text", text: "reminder" }],
+			display: false,
+		});
+		await session.waitForIdle();
+
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+	});
+
+	it("creates a goal linked to a freshly initialised todo list", async () => {
+		expect(session.getGoalModeState()).toBeUndefined();
+		mockTextStop("done");
+
+		// 驱动真实事件链:todo init 的 toolResult 必须挂出联动 goal。
+		const toolCallId = "call_todo_1";
+		const phases = [
+			{ name: "Build", tasks: [{ content: "scaffold", status: "pending" }] },
+			{ name: "Verify", tasks: [{ content: "tests", status: "pending" }] },
+		];
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: toolCallId, name: "todo", arguments: { op: "init" } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			},
+		});
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "todo",
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				details: { op: "init", phases },
+				timestamp: Date.now(),
+			},
+		});
+		await session.waitForIdle();
+
+		const state = session.getGoalModeState();
+		expect(state?.enabled).toBe(true);
+		expect(state?.goal.status).toBe("active");
+		expect(state?.goal.objective).toBe("Complete todo list: Build, Verify");
+	});
 });
