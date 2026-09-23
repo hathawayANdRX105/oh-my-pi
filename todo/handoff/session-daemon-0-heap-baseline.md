@@ -91,11 +91,22 @@
 
 | 项 | 值 |
 |---|---|
-| 空进程命令 / cwd / PID / RSS / heapUsed | |
-| 长会话命令 / 会话文件 / PID / RSS / heapUsed | |
-| 运行时与模块图 MB | |
-| 模型与 prompt 静态数据 MB | |
-| MCP / embedder / browser MB | |
-| 会话对象 MB | |
-| 判定 | 停 / 只做阶段 1 / 进入阶段 2 |
-| 脚本已删 | |
+| 空进程命令 / cwd / PID / RSS / heapUsed | `bun scripts/heap-baseline.ts empty`；cwd `/home/hathaway/projects/oh-my-pi/.wt/session-daemon`；PID `2563193`；RSS `265134080` B（252.85 MiB）；heapUsed `50703325` B（48.35 MiB） |
+| 长会话命令 / 会话文件 / PID / RSS / heapUsed | `bun scripts/heap-baseline.ts resume /home/hathaway/.omp/agent/sessions/-projects-ferrite/2026-09-06T08-59-02-163Z_01a075f1-4893-728e-8e8f-5763e1047e17.jsonl`；PID `2564366`；RSS `328622080` B（313.40 MiB）；heapUsed `97155811` B（92.66 MiB） |
+| 运行时与模块图 MB | 空 `45.51` MiB；长会话 `47.59` MiB；增量 `2.08` MiB |
+| 模型与 prompt 静态数据 MB | 空 `0.62` MiB；长会话 `2.89` MiB；增量 `2.27` MiB |
+| MCP / embedder / browser MB | 空 `0.13` MiB；长会话 `0.31` MiB；增量 `0.18` MiB。测量显式禁用 MCP、LSP、IRC 和 Python preflight，未预热 embedder/browser |
+| 会话对象 MB | 空 `0.94` MiB；长会话 `3.35` MiB；增量 `2.41` MiB |
+| 判定 | **只做阶段 1**。空进程可识别共享桶合计 `46.26` MiB，低于 `80` MiB 门槛；不进入阶段 2 |
+| 脚本已删 | 是；一次性测量脚本、临时 native 链接和 heap snapshots 均已删除 |
+
+分类规则：按 V8 snapshot 节点的 `type:name` 对 `self_size` 求和。`code`、module record/environment、source/code block、structure、symbol table 归运行时；名称含 model、prompt、catalog、provider、tokenizer、schema 归静态数据；名称含 MCP、embedder、browser、Chromium、Puppeteer、Playwright 归重资源；名称含 session、message、journal、artifact、tool call/result、conversation、transcript、history、usage 归会话对象。
+
+限制：这是名称启发式的 `self_size` 分类，不是 dominator retained-size 分析。空 snapshot 另有 `13.18` MiB、长会话 snapshot 另有 `46.64` MiB 无法可靠归桶；RSS 还包含 native、allocator、mmap 和 JIT 等 snapshot 外内存。因此不把 `60.55` MiB RSS 增量称为会话成本，也不把未分类内存算入可共享运行时。保守判定只使用可识别的空进程共享桶。
+
+原始输出：
+
+```json
+{"mode":"empty","pid":2563193,"cwd":"/home/hathaway/projects/oh-my-pi/.wt/session-daemon","sessionPath":null,"rss":265134080,"heapUsed":50703325,"heapTotal":41730048,"external":19967645,"snapshotPath":"/tmp/omp-heap-empty-2563193.heapsnapshot"}
+{"mode":"resume","pid":2564366,"cwd":"/home/hathaway/projects/oh-my-pi/.wt/session-daemon","sessionPath":"/home/hathaway/.omp/agent/sessions/-projects-ferrite/2026-09-06T08-59-02-163Z_01a075f1-4893-728e-8e8f-5763e1047e17.jsonl","rss":328622080,"heapUsed":97155811,"heapTotal":53036032,"external":53405795,"snapshotPath":"/tmp/omp-heap-resume-2564366.heapsnapshot"}
+```
