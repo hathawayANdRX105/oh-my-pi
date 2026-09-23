@@ -24,6 +24,8 @@ export class GoalContinuation {
 	#awaitingContinuationSettle = false;
 	/** Fingerprint of the last goal-continuation turn's tool activity. */
 	#previousActivity: string | undefined;
+	/** Consecutive error settles on an active goal; 2 triggers auto-pause (provider broken). */
+	#consecutiveErrorSettles = 0;
 
 	constructor(
 		private readonly host: {
@@ -67,6 +69,22 @@ export class GoalContinuation {
 		if (!state?.enabled || state.goal.status !== "active" || state.mode === "exiting") {
 			this.#awaitingContinuationSettle = false;
 			return false;
+		}
+		// 连续 error settle = provider 连接有问题(如聚合站 4xx/连接失败),
+		// 继续续跑只会空转(每圈一次失败请求,UI 一直"运行"但无产出)。
+		// 两连败即暂停 goal(与 ESC 语义一致);恢复用 /goal resume 或新消息。
+		if (message.stopReason === "error") {
+			this.#consecutiveErrorSettles++;
+			if (this.#consecutiveErrorSettles >= 2) {
+				logger.warn("Goal auto-paused after repeated error settles", {
+					errors: this.#consecutiveErrorSettles,
+				});
+				this.#awaitingContinuationSettle = false;
+				void this.host.pauseGoal();
+				return false;
+			}
+		} else {
+			this.#consecutiveErrorSettles = 0;
 		}
 		if (options.compactionOwned) return false;
 		if (this.host.continuationBlocked()) return false;
