@@ -274,4 +274,19 @@ describe("session-layer goal continuation", () => {
 		// Negative contract: the error settles the run; no reminder turn follows.
 		expect(providerCall).toBe(1);
 	});
+
+	it("pauses the goal when the user aborts with ESC (abort stop)", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("working on it");
+
+		await session.prompt("start the work");
+		session.abort();
+		await session.waitForIdle();
+
+		// ESC = 暂停:goal 转 paused,且不再自动续跑。
+		const state = session.getGoalModeState();
+		expect(state?.enabled).toBe(false);
+		expect(state?.goal.status).toBe("paused");
+		expect(session.isStreaming).toBe(false);
+	});
 });

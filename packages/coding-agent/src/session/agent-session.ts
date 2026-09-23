@@ -672,6 +672,8 @@ export class AgentSession {
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
 	readonly #goalContinuation: GoalContinuation;
+	/** Host modes (plan review / loop) that temporarily forbid goal auto-continuation. */
+	#goalContinuationBlocker: () => boolean = () => false;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -1400,6 +1402,13 @@ export class AgentSession {
 			// when idle, in every run mode.
 			promptCustomMessage: message => this.promptCustomMessage(message, { streamingBehavior: "followUp" }),
 			hasPendingAsyncWake: () => this.#hasPendingAsyncWake(),
+			continuationBlocked: () => this.#goalContinuationBlocker(),
+			pauseGoal: () =>
+				this.#goalRuntime.pauseGoal().catch(err => {
+					// dispose 等场景 session 已关,暂停写不进去也无妨(状态本就要销毁)。
+					logger.warn("Goal pause on abort failed", { err });
+					return undefined;
+				}),
 			buildContinuationPrompt: () => this.#goalRuntime.buildContinuationPrompt(),
 			getPromptGeneration: () => this.#promptGeneration,
 		});
@@ -3694,6 +3703,12 @@ export class AgentSession {
 			if (msg.stopReason === "aborted") {
 				this.#recovery.resolveRetry();
 				this.#resetSessionStopContinuationState();
+				// 用户主动中断 = 想停:goal 自动转 paused(ESC = 暂停语义),
+				// 恢复用 /goal resume 或用户直接发新消息。失败无妨(见 catch)。
+				await this.#goalRuntime.pauseGoal().catch(err => {
+					logger.warn("Goal pause on abort failed", { err });
+					return undefined;
+				});
 				await emitAgentEndNotification(ttsrAbortPendingAtAgentEnd ? { willContinue: true } : undefined);
 				return;
 			}
@@ -5866,6 +5881,11 @@ export class AgentSession {
 
 	getGoalModeState(): GoalModeState | undefined {
 		return this.#goalModeState;
+	}
+
+	/** Host modes (plan review / loop mode) that forbid goal auto-continuation while active. */
+	setGoalContinuationBlocker(blocker: () => boolean): void {
+		this.#goalContinuationBlocker = blocker;
 	}
 
 	setGoalModeState(state: GoalModeState | undefined): void {

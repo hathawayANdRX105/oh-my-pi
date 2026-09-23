@@ -32,6 +32,7 @@ function makeHarness(
 		promptCustomMessage?: (message: PromptSubmission) => Promise<boolean>;
 		hasPendingAsyncWake?: () => boolean;
 		buildContinuationPrompt?: (currentState: GoalModeState | undefined) => string | undefined;
+		continuationBlocked?: () => boolean;
 	},
 ) {
 	const submissions: PromptSubmission[] = [];
@@ -46,6 +47,8 @@ function makeHarness(
 				return Promise.resolve(true);
 			}),
 		hasPendingAsyncWake: options?.hasPendingAsyncWake ?? (() => false),
+		continuationBlocked: options?.continuationBlocked ?? (() => false),
+		pauseGoal: () => Promise.resolve(currentState),
 		buildContinuationPrompt: () =>
 			options?.buildContinuationPrompt
 				? options.buildContinuationPrompt(currentState)
@@ -181,6 +184,8 @@ describe("GoalContinuation", () => {
 				return Promise.resolve(true);
 			},
 			hasPendingAsyncWake: () => false,
+			continuationBlocked: () => false,
+			pauseGoal: () => Promise.resolve(state),
 			buildContinuationPrompt: () => {
 				// Last host call before the submit check: simulate the new prompt
 				// landing here.
@@ -328,5 +333,16 @@ describe("GoalContinuation", () => {
 		});
 		expect(after).toBe(false);
 		expect(h.submissions).toHaveLength(2);
+	});
+
+	it("skips when a host mode blocks continuation (plan review / loop mode)", async () => {
+		const h = makeHarness(makeState(), { continuationBlocked: () => true });
+		const scheduled = await h.driver.maybeContinue(
+			{ role: "assistant", content: [{ type: "text", text: "done" }] } as never,
+			NO_ACTIVITY,
+			{ compactionOwned: false },
+		);
+		expect(scheduled).toBe(false);
+		expect(h.submissions).toHaveLength(0);
 	});
 });
