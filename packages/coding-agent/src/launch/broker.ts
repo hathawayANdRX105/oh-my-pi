@@ -635,7 +635,13 @@ class DaemonBroker {
 				const model = await this.#embedClient.initialize(operation.model, operation.cacheDir);
 				if (!model) throw new Error("mnemopi embed subprocess unavailable");
 				const vectors: number[][] = [];
-				for await (const batch of model.embed(operation.texts, operation.batchSize)) vectors.push(...batch);
+				for await (const batch of model.embed(operation.texts, operation.batchSize)) {
+					// Batches are matrices, but a degenerate provider can yield a
+					// single flat vector per batch; mirror the worker's row-wise
+					// drain so the wire payload is always `number[][]`.
+					if (batch.length > 0 && Number.isFinite(batch[0])) vectors.push(batch as unknown as number[]);
+					else vectors.push(...batch);
+				}
 				return { op: "embed", vectors };
 			}
 			case "mcp-ensure":
