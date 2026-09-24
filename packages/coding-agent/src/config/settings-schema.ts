@@ -4152,6 +4152,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"todo.resumeAfterError": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Todos",
+			label: "Resume Todos After Errors",
+			description: "Continue incomplete todos after an error-settled turn (bounded by the reminder limit)",
+		},
+	},
+
 	"todo.eager": {
 		type: "enum",
 		values: ["default", "preferred", "always"] as const,
@@ -4875,17 +4886,6 @@ export const SETTINGS_SCHEMA = {
 			group: "Modes",
 			label: "Goal Status in Footer",
 			description: "Show token budget alongside the goal indicator in the status line",
-		},
-	},
-
-	"goal.continuationModes": {
-		type: "array",
-		default: ["interactive"],
-		ui: {
-			tab: "tasks",
-			group: "Modes",
-			label: "Goal Continuation Modes",
-			description: "Run modes where active goals may auto-continue between turns",
 		},
 	},
 
