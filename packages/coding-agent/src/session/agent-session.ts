@@ -3080,6 +3080,8 @@ export class AgentSession {
 			this.#activeAgentPromptGeneration = eventPromptGeneration;
 			this.#prunedTerminalRefusal = undefined;
 			this.#advisors.onPrimaryAgentStart();
+			this.#emitRunState("running");
+			this.#maintenance.noteTurnStarted();
 			if (this.#lastPromptOrigin === "user") {
 				const goalState = this.getGoalModeState();
 				if (goalState?.goal.status === "paused") {
@@ -7670,7 +7672,7 @@ export class AgentSession {
 		},
 	): Promise<boolean> {
 		return this.#admitSubmission(() => this.#sendCustomMessage(message, options));
-	}
+	};
 
 	async #sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
@@ -7681,6 +7683,8 @@ export class AgentSession {
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
+		// 系统源:sendCustomMessage 的 turn 不得把 paused goal 拉回 active。
+		this.#lastPromptOrigin = "system";
 		// An extension command parked on a manual compaction may fire this
 		// (`pi.sendMessage(..., { triggerTurn: true })`) and return without awaiting
 		// it. Claim synchronously, before the normalization await below, so the

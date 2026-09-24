@@ -79,6 +79,9 @@ export class GoalContinuation {
 				logger.warn("Goal auto-paused after repeated error settles", {
 					errors: this.#consecutiveErrorSettles,
 				});
+				// 清零:resume 之后必须重新累计两次失败才再次自动暂停,
+				// 否则计数残留会让用户刚 /goal resume 就因一次错误立刻再被暂停。
+				this.#consecutiveErrorSettles = 0;
 				this.#awaitingContinuationSettle = false;
 				void this.host.pauseGoal();
 				return false;

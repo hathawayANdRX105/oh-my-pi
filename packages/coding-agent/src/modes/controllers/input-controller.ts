@@ -485,7 +485,9 @@ export class InputController {
 				// the run to stop. Pause the goal so a queued goal-continuation or
 				// error-settle loop cannot re-arm the next turn.
 				if (!viewSession.isStreaming && viewSession.getGoalModeState()?.goal.status === "active") {
-					void viewSession.goalRuntime.pauseGoal().catch(() => {});
+					void viewSession.goalRuntime.pauseGoal().catch(err => {
+						logger.debug("goal pause on idle ESC failed", { err });
+					});
 				}
 				if (aborted) return;
 			}
