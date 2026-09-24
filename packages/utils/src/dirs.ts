@@ -28,7 +28,7 @@ export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
 
 /** Version (e.g. "1.0.0"); fork builds carry a `-fork.<n>` suffix so
  * `omp --version` shows which fork build is running, not the upstream tag. */
-export const VERSION: string = `${version}-fork.1`;
+export const VERSION: string = `${version}-fork.3`;
 
 /** Default User-Agent header string (e.g. "omp/17.2.12") */
 export const USER_AGENT = `omp/${VERSION}`;
