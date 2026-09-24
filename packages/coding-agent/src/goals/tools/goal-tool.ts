@@ -46,8 +46,7 @@ function validateCreateParams(params: GoalToolInput): { objective: string; token
 	if (!objective) {
 		throw new ToolError("objective is required when op=create");
 	}
-	// Discard model-supplied budgets rather than allowing a self-imposed stop.
-	return { objective, tokenBudget: undefined };
+	return { objective, tokenBudget: params.token_budget };
 }
 
 export class GoalTool implements AgentTool<typeof goalSchema, GoalToolDetails> {

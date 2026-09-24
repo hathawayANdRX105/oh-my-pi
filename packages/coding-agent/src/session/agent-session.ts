@@ -7672,7 +7672,7 @@ export class AgentSession {
 		},
 	): Promise<boolean> {
 		return this.#admitSubmission(() => this.#sendCustomMessage(message, options));
-	};
+	}
 
 	async #sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
