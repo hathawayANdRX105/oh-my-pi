@@ -236,7 +236,10 @@ describe("ACP initialize conformance", () => {
 				version: VERSION,
 			}),
 		);
-		expect(response.agentInfo!.version).toBe(pkg.version);
+		// Runtime VERSION carries the fork suffix (e.g. "18.2.8-fork.1");
+		// it must stay traceable to the published package version.
+		expect(response.agentInfo!.version).toBe(VERSION);
+		expect(VERSION.startsWith(pkg.version)).toBe(true);
 	});
 
 	it("preserves the agentCapabilities contract clients depend on", async () => {
