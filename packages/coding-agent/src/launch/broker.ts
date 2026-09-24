@@ -6,6 +6,9 @@ import { FileLock, Process, type PtyRunResult, PtySession } from "@oh-my-pi/pi-n
 import { isEnoent, logger, postmortem, procmgr, sanitizeText, setProcessName } from "@oh-my-pi/pi-utils";
 import { TerminalQueryResponder } from "@oh-my-pi/pi-utils/vterm";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
+import { connectToServer, disconnectServer } from "../mcp/client";
+import type { MCPServerConfig, MCPServerConnection } from "../mcp/types";
+import { MnemopiEmbedClient, spawnMnemopiEmbedWorker } from "../mnemopi/embed-client";
 import {
 	truncateHead,
 	truncateHeadBytes,
@@ -415,6 +418,15 @@ class DaemonBroker {
 	readonly #idleGraceMs: number;
 	readonly #restartBackoffBaseMs: number;
 	readonly #records = new Map<string, ManagedDaemon>();
+	readonly #embedClient = new MnemopiEmbedClient(spawnMnemopiEmbedWorker);
+	/**
+	 * MCP server connections owned by this broker: one stdio subprocess per
+	 * server id across every omp process in the project. `#mcpStarting`
+	 * reserves in-flight ensures so concurrent clients spawn exactly one
+	 * process, and a failed spawn clears the entry so the next request retries.
+	 */
+	readonly #mcpConnections = new Map<string, MCPServerConnection>();
+	readonly #mcpStarting = new Map<string, Promise<MCPServerConnection>>();
 	/**
 	 * Names reserved by an in-flight `start` before its record lands in
 	 * `#records`. Requests dispatch concurrently, and `#start` awaits (cwd stat,
@@ -476,6 +488,12 @@ class DaemonBroker {
 			await record.log?.close();
 			await record.persistQueue;
 		}
+		await this.#embedClient.terminate();
+		for (const connection of this.#mcpConnections.values()) {
+			await disconnectServer(connection).catch(() => {});
+		}
+		this.#mcpConnections.clear();
+		this.#mcpStarting.clear();
 		this.#ownerSockets.clear();
 		for (const socket of this.#sockets) socket.destroy();
 		this.#sockets.clear();
@@ -622,6 +640,31 @@ class DaemonBroker {
 		switch (operation.op) {
 			case "ping":
 				return { op: "ping", projectDir: this.#projectDir };
+			case "embed-init": {
+				const model = await this.#embedClient.initialize(operation.model, operation.cacheDir);
+				return { op: "embed-init", ready: model !== null, pid: this.#embedClient.pid };
+			}
+			case "embed": {
+				const model = await this.#embedClient.initialize(operation.model, operation.cacheDir);
+				if (!model) throw new Error("mnemopi embed subprocess unavailable");
+				const vectors: number[][] = [];
+				for await (const batch of model.embed(operation.texts, operation.batchSize)) {
+					// Batches are matrices, but a degenerate provider can yield a
+					// single flat vector per batch; mirror the worker's row-wise
+					// drain so the wire payload is always `number[][]`.
+					if (batch.length > 0 && Number.isFinite(batch[0])) vectors.push(batch as unknown as number[]);
+					else vectors.push(...batch);
+				}
+				// Final guard: coerce any residual typed-array (Float32Array from
+				// the embed provider) or scalar row into a plain number array so
+				// the wire payload parses as `number[][]`.
+				const matrix = vectors.map(row => (Array.isArray(row) ? row : Array.from(row as ArrayLike<number>)));
+				return { op: "embed", vectors: matrix };
+			}
+			case "mcp-ensure":
+				return this.#mcpEnsure(operation.server, operation.config);
+			case "mcp-request":
+				return this.#mcpRequest(operation);
 			case "start":
 				return this.#start(operation.spec, operation.owner, operation.replace);
 			case "list": {
@@ -654,6 +697,78 @@ class DaemonBroker {
 			case "shutdown":
 				return { op: "shutdown" };
 		}
+	}
+
+	/**
+	 * Ensure the broker-owned connection to one MCP server. The first call
+	 * spawns the stdio subprocess; concurrent callers share the in-flight
+	 * attempt instead of racing two spawns, and a failed spawn clears the
+	 * reservation so the next request may retry (same shape as `#startingNames`).
+	 */
+	async #mcpEnsure(server: string, config: Record<string, unknown>): Promise<DaemonRpcResult> {
+		const existing = this.#mcpConnections.get(server);
+		if (existing) return { op: "mcp-ensure", attached: true, ...this.#mcpInfo(existing) };
+		const inFlight = this.#mcpStarting.get(server);
+		if (inFlight) {
+			const connection = await inFlight;
+			return { op: "mcp-ensure", attached: false, ...this.#mcpInfo(connection) };
+		}
+		const attempt = this.#connectMcpServer(server, config);
+		this.#mcpStarting.set(server, attempt);
+		try {
+			const connection = await attempt;
+			return { op: "mcp-ensure", attached: false, ...this.#mcpInfo(connection) };
+		} finally {
+			if (this.#mcpStarting.get(server) === attempt) this.#mcpStarting.delete(server);
+		}
+	}
+
+	#connectMcpServer(server: string, config: Record<string, unknown>): Promise<MCPServerConnection> {
+		// The broker owns the whole MCP session for this server id: its default
+		// `roots/list`/`ping` handler answers server-to-client requests, and
+		// server-side notifications stay broker-local (clients re-read their
+		// catalogs on demand instead of receiving pushes).
+		return connectToServer(server, config as unknown as MCPServerConfig, {
+			onNotification: () => {},
+		}).then(connection => {
+			this.#mcpConnections.set(server, connection);
+			// A dead server subprocess (or dropped remote stream) leaves a stale
+			// entry that every later ensure would hand back as `attached: true`.
+			// Drop it on transport close so the next ensure re-spawns the server
+			// instead of serving clients a dead connection forever.
+			connection.transport.onClose = () => {
+				if (this.#mcpConnections.get(server) === connection) this.#mcpConnections.delete(server);
+			};
+			return connection;
+		});
+	}
+
+	/**
+	 * Forward one JSON-RPC message to a broker-owned MCP connection. Callers
+	 * must have run `mcp-ensure` first; when the connection is gone (broker
+	 * restart, server crash) the error is retryable via a fresh ensure.
+	 */
+	async #mcpRequest(operation: Extract<DaemonOperation, { op: "mcp-request" }>): Promise<DaemonRpcResult> {
+		const connection = this.#mcpConnections.get(operation.server);
+		if (!connection) throw new Error(`MCP server "${operation.server}" is not connected; ensure it first`);
+		if (operation.notification) {
+			await connection.transport.notify(operation.method, operation.params);
+			return { op: "mcp-request", notified: true };
+		}
+		const result = await connection.transport.request(operation.method, operation.params);
+		return { op: "mcp-request", result };
+	}
+
+	#mcpInfo(connection: MCPServerConnection): {
+		serverInfo: Record<string, unknown>;
+		capabilities: Record<string, unknown>;
+		instructions?: string;
+	} {
+		return {
+			serverInfo: connection.serverInfo as unknown as Record<string, unknown>,
+			capabilities: connection.capabilities as unknown as Record<string, unknown>,
+			instructions: connection.instructions,
+		};
 	}
 
 	async #start(spec: DaemonSpec, owner?: string, replace = false): Promise<DaemonRpcResult> {

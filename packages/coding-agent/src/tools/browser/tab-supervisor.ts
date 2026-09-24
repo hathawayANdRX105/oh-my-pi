@@ -24,6 +24,7 @@ import {
 	type BrowserKindTag,
 	type CmuxBrowserHandle,
 	holdBrowser,
+	isBrowserRegistered,
 	type PuppeteerBrowserHandle,
 	releaseBrowser,
 } from "./registry";
@@ -318,6 +319,13 @@ async function acquireTabImpl(
 	// browser hold nobody is waiting for.
 	if (opts.signal?.aborted) {
 		throw new ToolAbortError("Browser tab open aborted");
+	}
+	// While this open sat in the per-name queue (or between `acquireBrowser`
+	// returning and this point), `disposeUnreferencedBrowsers` may have deleted
+	// and tree-killed the handle — its refCount was still 0. Fail fast with a
+	// retryable error instead of spawning a worker against a dead browser.
+	if (!("client" in browser) && !isBrowserRegistered(browser)) {
+		throw new ToolError("Browser was disposed during tab open; retry the browser open");
 	}
 	killedTabs.delete(name);
 	// Temporary refCount hold so releasing an existing tab on the SAME browser

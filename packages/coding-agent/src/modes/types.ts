@@ -544,7 +544,6 @@ export interface InteractiveModeContext {
 	setLoopPrompt(prompt: string): void;
 	armLoopAutoSubmit(): void;
 	disableLoopMode(message?: string): void;
-	cancelGoalContinuation(): void;
 	disableGoalMode(message?: string): void;
 	pauseLoop(): void;
 	handlePlanApproval(details: PlanApprovalDetails): Promise<void>;

@@ -664,8 +664,13 @@ impl GitRepo {
 			return Err(Error::backend("git worktree add", "source index is missing"));
 		}
 
+		// Skip omp's in-repo worktree dir: a checkout that keeps its
+		// worktrees under `.wt/` must not carry sibling worktrees into a new
+		// one, and cloning `.wt/<name>` into itself used to self-nest until
+		// the disk filled (todo/bug-worktree-recursive-clone.md). The
+		// destination guard in pi-iso backs this up for arbitrary paths.
 		pi_iso::backend(kind)
-			.clone_tree(self.root(), path, &[OsStr::new(".git")])
+			.clone_tree(self.root(), path, &[OsStr::new(".git"), OsStr::new(".wt")])
 			.map_err(|err| Error::backend("git worktree add", err))?;
 		let admin = register_worktree(path, &self.info().common_dir, head)?;
 		fs::copy(&source_index, admin.join("index"))?;
@@ -1563,6 +1568,12 @@ fn collect_clone_reconciliation_paths(
 			_ => {},
 		}
 	}
+	// omp keeps its own worktrees under `.wt/`; they are never content a
+	// new worktree should receive (todo/bug-worktree-recursive-clone.md).
+	let untracked = untracked
+		.into_iter()
+		.filter(|path| !path.starts_with(b".wt/"))
+		.collect();
 	Ok((dirty_tracked, untracked))
 }
 
@@ -2614,5 +2625,40 @@ mod tests {
 		);
 		assert!(repo.worktree_prune().is_ok());
 		let _ = fs::remove_dir_all(linked);
+	}
+
+	#[test]
+	fn worktree_add_inside_worktree_excludes_worktree_dir() {
+		// Regression for todo/bug-worktree-recursive-clone.md: an in-repo
+		// `.wt/<name>` destination used to clone the destination into itself
+		// until the disk filled. The clone must skip `.wt` entirely.
+		let (temp, repo) = fixture();
+		git(temp.path(), &["branch", "side"]);
+		fs::create_dir_all(temp.path().join(".wt/old")).unwrap();
+		fs::write(temp.path().join(".wt/old/marker"), "old\n").unwrap();
+		fs::write(temp.path().join(".wt/old/nested"), "nested\n").unwrap();
+
+		let linked = temp.path().join(".wt/new");
+		repo
+			.worktree_add(&linked, "side", WorktreeAddOptions {
+				detach:       false,
+				clone:        WorktreeClone::Auto,
+				keep_changes: false,
+			})
+			.unwrap();
+
+		assert!(linked.join(".git").exists());
+		assert!(
+			!linked.join(".wt").exists(),
+			"new worktree must not carry sibling worktrees or itself"
+		);
+		assert_eq!(
+			fs::read_to_string(temp.path().join(".wt/old/marker")).unwrap(),
+			"old\n"
+		);
+		assert_eq!(
+			fs::read_to_string(temp.path().join(".wt/old/nested")).unwrap(),
+			"nested\n"
+		);
 	}
 }

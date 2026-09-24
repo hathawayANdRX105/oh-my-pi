@@ -160,6 +160,15 @@ export function streamSimpleOpenAIResponses(
 ): AssistantMessageEventStream {
 	return streamSimple(model, context, options);
 }
+
+/**
+ * Compatibility re-export for the legacy per-API Codex stream entry: omp's
+ * pi-ai barrel moved provider stream functions behind `providers/*` subpath
+ * imports, but legacy extensions (e.g. `pi-search-hub`) still import
+ * `streamOpenAICodexResponses` from the pi-ai package root. Bridging it here
+ * keeps the root import resolving through Bun's static named-export check.
+ */
+export { streamOpenAICodexResponses } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 /**
  * Compatibility re-exports for runtime helpers that upstream
  * `@earendil-works/pi-ai` exposed from its package root but omp's

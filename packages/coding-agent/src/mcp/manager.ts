@@ -7,11 +7,13 @@
 import * as path from "node:path";
 import * as url from "node:url";
 import type { TSchema } from "@oh-my-pi/pi-ai";
-import { logger } from "@oh-my-pi/pi-utils";
+import { isCompiledBinary, logger, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { EffectiveExtensionRoots, SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { AuthStorage } from "../session/auth-storage";
+import { daemonClientForProject, DaemonBrokerRejectedError, type DaemonBrokerClient } from "../launch/client";
+import type { DaemonRpcResult } from "../launch/protocol";
 import {
 	MCPConnectionTimeoutError,
 	connectToServer,
@@ -27,6 +29,7 @@ import {
 	subscribeToResources,
 	unsubscribeFromResources,
 } from "./client";
+import { MCPTransportError } from "./errors";
 import {
 	isBrowserMCPServer,
 	type LoadMCPConfigsOptions,
@@ -50,11 +53,13 @@ import { setGeneratedHeader } from "./transports/header-policy";
 import type {
 	MCPAuthChallenge,
 	MCPGetPromptResult,
+	MCPImplementation,
 	MCPPrompt,
 	MCPRequestOptions,
 	MCPResource,
 	MCPResourceReadResult,
 	MCPResourceTemplate,
+	MCPServerCapabilities,
 	MCPServerConfig,
 	MCPServerConnection,
 	MCPToolDefinition,
@@ -238,6 +243,93 @@ export interface MCPDiscoverOptions {
 export type MCPAuthHandler = (serverName: string, challenge: MCPAuthChallenge) => Promise<MCPServerConfig | undefined>;
 
 /**
+ * MCP transport routed through the project daemon broker. The server
+ * subprocess and its MCP session are broker-owned (see `DaemonBroker`'s
+ * `mcp-ensure` / `mcp-request` operations): one shared process per server id
+ * across every omp process in the project. This client-side handle forwards
+ * JSON-RPC over the broker socket; `close()` is a no-op because the shared
+ * session outlives any single client (the broker's idle-grace lifecycle reaps
+ * it). A dead broker rejects the in-flight request with a stable closed
+ * transport error, fires `onClose` once so the manager's reconnect path
+ * re-ensures the server on the next broker, and every later request
+ * lazily re-resolves the broker client.
+ */
+class BrokerMCPTransport implements MCPTransport {
+	readonly connected = true;
+	onClose?: () => void;
+	onError?: (error: Error) => void;
+	// Server-to-client requests are answered by the broker's session handler
+	// and server notifications stay broker-local, so no client-side wiring.
+	readonly #server: string;
+	readonly #client: () => Promise<DaemonBrokerClient>;
+	#lost = false;
+
+	constructor(server: string, client: () => Promise<DaemonBrokerClient>) {
+		this.#server = server;
+		this.#client = client;
+	}
+
+	async request<T = unknown>(
+		method: string,
+		params?: Record<string, unknown>,
+		options?: MCPRequestOptions,
+	): Promise<T> {
+		let result: Extract<DaemonRpcResult, { op: "mcp-request" }>;
+		try {
+			const client = await this.#client();
+			result = (await client.request(
+				{ op: "mcp-request", server: this.#server, method, params },
+				options?.signal,
+			)) as Extract<DaemonRpcResult, { op: "mcp-request" }>;
+		} catch (error) {
+			this.#markLost(error);
+			if (error instanceof DaemonBrokerRejectedError) throw error;
+			throw this.#closedError(error);
+		}
+		return result.result as T;
+	}
+
+	async notify(method: string, params?: Record<string, unknown>): Promise<void> {
+		try {
+			const client = await this.#client();
+			await client.request({ op: "mcp-request", server: this.#server, method, params, notification: true });
+		} catch (error) {
+			this.#markLost(error);
+			if (error instanceof DaemonBrokerRejectedError) throw error;
+			throw this.#closedError(error);
+		}
+	}
+
+	/** The broker owns the shared session; dropping this handle keeps the server for other clients. */
+	async close(): Promise<void> {}
+
+	#closedError(error: unknown): MCPTransportError {
+		return new MCPTransportError({
+			transport: "unknown",
+			stage: "receive",
+			failure: "closed",
+			message: `MCP broker connection lost: ${error instanceof Error ? error.message : String(error)}`,
+			retryable: true,
+			cause: error,
+		});
+	}
+
+	/**
+	 * Arm the manager's reconnect path only for broker-level loss: a closed or
+	 * re-spawned broker socket, or the broker reporting the session is gone
+	 * (fresh broker, no connections yet). Ordinary broker-answered rejections
+	 * (server-side JSON-RPC/tool errors) are RPC outcomes, not a lost session.
+	 */
+	#markLost(error: unknown): void {
+		if (this.#lost) return;
+		if (error instanceof DaemonBrokerRejectedError && !/is not connected; ensure it first/.test(error.message))
+			return;
+		this.#lost = true;
+		this.onClose?.();
+	}
+}
+
+/**
  * MCP Server Manager.
  *
  * Manages connections to MCP servers and provides tools to the agent.
@@ -307,13 +399,25 @@ export class MCPManager {
 	 * attempt is pending.
 	 */
 	#lostRemoteServers = new Map<string, { timer: NodeJS.Timeout | undefined; delayMs: number }>();
+	/**
+	 * Route server subprocesses through the project daemon broker instead of
+	 * spawning them in-process. Same host-capability gate as the shared
+	 * browser and the broker-routed embed worker: a compiled CLI or a process
+	 * with a self-dispatching CLI worker entry can spawn the project broker
+	 * and must route through it (one shared MCP server process per project);
+	 * hosts without one (bun test, SDK embedding) keep process-local
+	 * transports.
+	 */
+	readonly #brokerRouted: boolean;
 
 	constructor(
 		private cwd: string,
 		private toolCache: MCPToolCache | null = null,
 		private loadConfigs: MCPConfigLoader = loadAllMCPConfigs,
 		private reconnectPolicy: MCPReconnectPolicy = DEFAULT_RECONNECT_POLICY,
-	) {}
+	) {
+		this.#brokerRouted = isCompiledBinary() || workerHostEntry() !== null;
+	}
 
 	/**
 	 * Register a listener for MCP connection lifecycle events
@@ -677,7 +781,7 @@ export class MCPManager {
 			// Resolve auth config before connecting, but do so per-server in parallel.
 			const connectionPromise = (async () => {
 				const resolvedConfig = await this.#resolveAuthConfig(config);
-				return connectToServer(name, resolvedConfig, {
+				return this.#connectRouted(name, resolvedConfig, {
 					onNotification: (method, params) => {
 						this.#handleServerNotification(name, method, params);
 					},
@@ -1476,6 +1580,39 @@ export class MCPManager {
 		return null;
 	}
 
+	/**
+	 * Establish a server connection, routing the subprocess through the project
+	 * daemon broker when this host can spawn one. Broker mode hands the server
+	 * off to the broker (`mcp-ensure`) and returns a client-side handle over the
+	 * shared session; the `onNotification` / `onRequest` handlers only apply to
+	 * the local path — in broker mode the broker's own session handlers answer
+	 * server requests and notifications stay broker-local.
+	 */
+	async #connectRouted(
+		name: string,
+		config: MCPServerConfig,
+		options?: {
+			onNotification?: (method: string, params: unknown) => void;
+			onRequest?: (method: string, params: unknown) => Promise<unknown>;
+		},
+	): Promise<MCPServerConnection> {
+		if (!this.#brokerRouted) return connectToServer(name, config, options);
+		const client = await daemonClientForProject(this.cwd);
+		const result = (await client.request({
+			op: "mcp-ensure",
+			server: name,
+			config: config as unknown as Record<string, unknown>,
+		})) as Extract<DaemonRpcResult, { op: "mcp-ensure" }>;
+		return {
+			name,
+			config,
+			serverInfo: result.serverInfo as unknown as MCPImplementation,
+			capabilities: result.capabilities as unknown as MCPServerCapabilities,
+			instructions: result.instructions,
+			transport: new BrokerMCPTransport(name, () => daemonClientForProject(this.cwd)),
+		};
+	}
+
 	/** Establish a new connection to a server, wire handlers, load tools. */
 	async #connectAndWireServer(
 		name: string,
@@ -1484,7 +1621,7 @@ export class MCPManager {
 		reconnectEpoch: number,
 	): Promise<MCPServerConnection> {
 		const resolvedConfig = await this.#resolveAuthConfig(config);
-		const connection = await connectToServer(name, resolvedConfig, {
+		const connection = await this.#connectRouted(name, resolvedConfig, {
 			onNotification: (method, params) => {
 				this.#handleServerNotification(name, method, params);
 			},

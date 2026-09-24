@@ -15,7 +15,7 @@ import type { Goal, GoalToolDetails } from "@oh-my-pi/pi-tui/tools/goal";
 const goalSchema = type({
 	op: type("'create' | 'get' | 'complete' | 'resume' | 'drop'").describe("goal operation"),
 	"objective?": type("string").describe("goal objective"),
-	"token_budget?": type("number.integer").describe("token budget"),
+	"token_budget?": type("number.integer").describe("ignored; goals are unbounded"),
 });
 
 export type GoalToolInput = typeof goalSchema.infer;
@@ -46,11 +46,7 @@ function validateCreateParams(params: GoalToolInput): { objective: string; token
 	if (!objective) {
 		throw new ToolError("objective is required when op=create");
 	}
-	const tokenBudget = params.token_budget;
-	if (tokenBudget !== undefined && (!Number.isInteger(tokenBudget) || tokenBudget <= 0)) {
-		throw new ToolError("token_budget must be a positive integer when provided");
-	}
-	return { objective, tokenBudget };
+	return { objective, tokenBudget: params.token_budget };
 }
 
 export class GoalTool implements AgentTool<typeof goalSchema, GoalToolDetails> {

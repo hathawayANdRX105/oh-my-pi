@@ -223,6 +223,7 @@ import {
 	releaseIdleTabsForOwner,
 	releaseTabsForOwner,
 } from "../tools/browser/tab-supervisor";
+import { disposeUnreferencedBrowsers } from "../tools/browser/registry";
 import type { CheckpointState, CompletedRewindState } from "../tools/checkpoint";
 import { releaseComputerSessionsForOwner } from "../tools/computer/supervisor";
 import { normalizeLocalScheme, resolveToCwd } from "../tools/path-utils";
@@ -410,6 +411,7 @@ export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from ".
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
 
+import { GoalContinuation } from "./goal-continuation";
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
@@ -681,6 +683,9 @@ export class AgentSession {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	readonly #goalContinuation: GoalContinuation;
+	/** Host modes (plan review / loop) that temporarily forbid goal auto-continuation. */
+	#goalContinuationBlocker: () => boolean = () => false;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -1419,6 +1424,25 @@ export class AgentSession {
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
 		};
 		this.#todo = new TodoTracker(todoHost);
+		this.#goalContinuation = new GoalContinuation({
+			getGoalModeState: () => this.#goalModeState,
+			// followUp (not bare): the agent_end handler runs while the agent loop
+			// is still unwinding (isStreaming true), so a bare submission would
+			// throw AgentBusyError — the exact race the TUI timer's 800ms delay
+			// used to dodge. followUp queues behind the settling turn and drains
+			// when idle, in every run mode.
+			promptCustomMessage: message => this.promptCustomMessage(message, { streamingBehavior: "followUp" }),
+			hasPendingAsyncWake: () => this.#hasPendingAsyncWake(),
+			continuationBlocked: () => this.#goalContinuationBlocker(),
+			pauseGoal: () =>
+				this.#goalRuntime.pauseGoal().catch(err => {
+					// dispose 等场景 session 已关,暂停写不进去也无妨(状态本就要销毁)。
+					logger.warn("Goal pause on abort failed", { err });
+					return undefined;
+				}),
+			buildContinuationPrompt: () => this.#goalRuntime.buildContinuationPrompt(),
+			getPromptGeneration: () => this.#promptGeneration,
+		});
 		this.#modelMentions = new ModelMentionRegistry({
 			sessionManager: this.sessionManager,
 			modelRegistry: this.#modelRegistry,
@@ -1817,7 +1841,19 @@ export class AgentSession {
 		this.#goalRuntime = new GoalRuntime({
 			getState: () => this.#goalModeState,
 			setState: state => {
+				const wasEnabled = this.#goalModeState?.enabled === true;
 				this.#goalModeState = state;
+				// Session-level goal-tool activation (all run modes): the TUI used to
+				// do this from its goal_updated listener, which left RPC/ACP/headless
+				// sessions without a callable goal tool. Exit-time toolset restore
+				// stays in the TUI; non-TUI sessions keep the hidden goal tool active
+				// after drop/complete, which is harmless (hidden, default-inactive).
+				if (state?.enabled && !wasEnabled) {
+					const enabled = this.getEnabledToolNames().filter(name => name !== "goal");
+					this.setActiveToolsByName([...new Set([...enabled, "goal"])]).catch(err => {
+						logger.warn("Goal tool activation failed", { err });
+					});
+				}
 			},
 			getCurrentUsage: () => {
 				const usage = this.getSessionStats().tokens;
@@ -2680,6 +2716,8 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
+	/** Origin of the prompt that started the current agent run; drives goal auto-resume. */
+	#lastPromptOrigin: "user" | "system" = "system";
 	/**
 	 * Classifier-refusal turn pruned from active context at settle (#3591).
 	 * Retained until the next run starts so post-settle readers
@@ -3108,6 +3146,14 @@ export class AgentSession {
 			this.#advisors.onPrimaryAgentStart();
 			this.#emitRunState("running");
 			this.#maintenance.noteTurnStarted();
+			if (this.#lastPromptOrigin === "user") {
+				const goalState = this.getGoalModeState();
+				if (goalState?.goal.status === "paused") {
+					void this.#goalRuntime.resumeGoal().catch(err => {
+						logger.debug("goal auto-resume on user turn failed", { err });
+					});
+				}
+			}
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
@@ -3261,6 +3307,16 @@ export class AgentSession {
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
 		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
+		// A real user message breaks the goal-continuation suppression chain, the
+		// same signal the TUI timer used (custom goal-continuation prompts arrive
+		// as role:"custom" and do not reset it).
+		if (
+			event.type === "message_start" &&
+			event.message.role === "user" &&
+			!("synthetic" in event.message && event.message.synthetic)
+		) {
+			this.#goalContinuation.resetSuppression();
+		}
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
@@ -3706,6 +3762,12 @@ export class AgentSession {
 			if (msg.stopReason === "aborted") {
 				this.#recovery.resolveRetry();
 				this.#resetSessionStopContinuationState();
+				// 用户主动中断 = 想停:goal 自动转 paused(ESC = 暂停语义),
+				// 恢复用 /goal resume 或用户直接发新消息。失败无妨(见 catch)。
+				await this.#goalRuntime.pauseGoal().catch(err => {
+					logger.warn("Goal pause on abort failed", { err });
+					return undefined;
+				});
 				await emitAgentEndNotification(ttsrAbortPendingAtAgentEnd ? { willContinue: true } : undefined);
 				return;
 			}
@@ -3788,6 +3850,21 @@ export class AgentSession {
 				await this.#recovery.persistTerminalEmptyErrorTurn(msg);
 			}
 			await this.#recovery.onErrorSettledWithoutRetry(msg, compactionResult);
+			// Goal continuation (session layer, all run modes): fires on every
+			// non-compaction-owned settle — error stops and mid-tool-use stops
+			// included, matching the TUI timer semantics this replaces. Sits before
+			// the hasToolCalls early-return so interrupted tool runs also continue.
+			const goalContinuationScheduled = await this.#goalContinuation.maybeContinue(msg, activeMessages, {
+				compactionOwned: Boolean(
+					compactionResult.deferredHandoff ||
+					compactionResult.continuationScheduled ||
+					compactionResult.automaticContinuationBlocked,
+				),
+			});
+			if (goalContinuationScheduled) {
+				await emitAgentEndNotification({ willContinue: true });
+				return;
+			}
 			// Stop-time todo reconciliation only fires at a text-only final stop. A run
 			// that ends still mid-tool-use (deadline hit, context full, etc.) skips the
 			// reminder so we don't pile a follow-up onto an already in-flight turn.
@@ -3812,7 +3889,12 @@ export class AgentSession {
 			}
 			// A capped empty stop still has stopReason "stop"; built-in reminders
 			// must not restart it after recovery has declared the turn terminal.
-			if (msg.stopReason !== "error" && emptyOutputRecovery !== "terminal") {
+			// todo.resumeAfterError lets the todo reminder take over after an
+			// error-settled stop (retries exhausted) so incomplete work chains are
+			// not silently dropped; remindersMax bounds the loop.
+			const resumeTodosAfterError =
+				msg.stopReason === "error" && this.settings.get("todo.resumeAfterError") === true;
+			if ((msg.stopReason !== "error" || resumeTodosAfterError) && emptyOutputRecovery !== "terminal") {
 				if (this.#enforceRewindBeforeYield()) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -4070,9 +4152,10 @@ export class AgentSession {
 		if (options.terminalTextAnswer && !activeGoal) return false;
 		return this.#scheduleAutoContinuePrompt(options.generation);
 	}
-
 	#scheduleAutoContinuePrompt(generation: number): boolean {
 		const continuePrompt = async () => {
+			// System-origin turn: a paused goal must not auto-resume on synthetic prompts.
+			this.#lastPromptOrigin = "system";
 			// Compaction summarizes away the first-message eager preludes, so re-assert the
 			// delegate-via-tasks / phased-todo reminders on this auto-resumed turn. This runs
 			// at invocation (past the abort check below), so an aborted continuation queues
@@ -4792,17 +4875,28 @@ export class AgentSession {
 
 	async #releaseOwnedBrowserTabs(ownerId: string | undefined): Promise<void> {
 		if (!ownerId) return;
+		let released = 0;
 		try {
-			const released = await withTimeout(
+			released = await withTimeout(
 				releaseTabsForOwner(ownerId, { kill: true }),
 				3_000,
 				"Timed out releasing owned browser tabs during dispose",
 			);
+		} catch (error) {
+			logger.warn("Failed to release owned browser tabs during dispose", { error: String(error) });
+		} finally {
 			if (released > 0) {
 				logger.debug("Released owned browser tabs during dispose", { ownerId, released });
 			}
-		} catch (error) {
-			logger.warn("Failed to release owned browser tabs during dispose", { error: String(error) });
+			// Anything still at refCount 0 was never reaped by the owner walk
+			// (reused tabs, aborted launches, a timed-out release above). Close
+			// those too — handles still held (refCount > 0) are skipped, so a
+			// timed-out release cannot cause an unsafe kill here.
+			try {
+				await disposeUnreferencedBrowsers({ kill: true });
+			} catch (error) {
+				logger.warn("Failed to dispose unreferenced browsers during dispose", { error: String(error) });
+			}
 		}
 	}
 
@@ -5882,6 +5976,11 @@ export class AgentSession {
 		return this.#goalModeState;
 	}
 
+	/** Host modes (plan review / loop mode) that forbid goal auto-continuation while active. */
+	setGoalContinuationBlocker(blocker: () => boolean): void {
+		this.#goalContinuationBlocker = blocker;
+	}
+
 	setGoalModeState(state: GoalModeState | undefined): void {
 		this.#goalModeState = state;
 	}
@@ -6371,6 +6470,7 @@ export class AgentSession {
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		this.#lastPromptOrigin = "user";
 		return this.#admitSubmission(() => this.#prompt(text, options));
 	}
 
@@ -6636,6 +6736,7 @@ export class AgentSession {
 		// turn against the disconnected session nor lose the session to the
 		// interrupted-turn resume once compaction ends.
 		const release = await this.#maintenance.waitForManualCompactionCleanup();
+		this.#lastPromptOrigin = "system";
 		const outcome: PromptDispatchOutcome = { sessionClaimed: false };
 		if (!release) return this.#dispatchCustomPrompt(message, options, outcome);
 		try {
@@ -7532,6 +7633,7 @@ export class AgentSession {
 		}
 
 		const queuedMessages = [...this.#pendingNextTurnMessages];
+		this.#lastPromptOrigin = "system";
 		this.#pendingNextTurnMessages = [];
 		const message = queuedMessages[queuedMessages.length - 1];
 		if (!message) {
@@ -7689,6 +7791,8 @@ export class AgentSession {
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
+		// 系统源:sendCustomMessage 的 turn 不得把 paused goal 拉回 active。
+		this.#lastPromptOrigin = "system";
 		// An extension command parked on a manual compaction may fire this
 		// (`pi.sendMessage(..., { triggerTurn: true })`) and return without awaiting
 		// it. Claim synchronously, before the normalization await below, so the
