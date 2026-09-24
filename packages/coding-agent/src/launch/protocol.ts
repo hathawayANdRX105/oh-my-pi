@@ -175,7 +175,9 @@ function numberMatrix(value: unknown, label: string): number[][] {
 		if (!Array.isArray(row)) throw new Error(`${label}[${rowIndex}] must be an array`);
 		return row.map((item, columnIndex) => {
 			if (typeof item !== "number") {
-				throw new Error(`${label}[${rowIndex}][${columnIndex}] must be a number`);
+				throw new Error(
+					`${label}[${rowIndex}][${columnIndex}] must be a number (got ${typeof item}: ${String(item)})`,
+				);
 			}
 			return item;
 		});
