@@ -274,4 +274,50 @@ describe("session-layer goal continuation", () => {
 		// Negative contract: the error settles the run; no reminder turn follows.
 		expect(providerCall).toBe(1);
 	});
+
+	it("pauses the goal when the user aborts with ESC (abort stop)", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("working on it");
+
+		await session.prompt("start the work");
+		session.abort();
+		await session.waitForIdle();
+
+		// ESC = 暂停:goal 转 paused,且不再自动续跑。
+		const state = session.getGoalModeState();
+		expect(state?.enabled).toBe(false);
+		expect(state?.goal.status).toBe("paused");
+		expect(session.isStreaming).toBe(false);
+	});
+
+	it("auto-resumes a paused goal when the user submits a new prompt", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		await session.goalRuntime.pauseGoal();
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+		mockTextStop("resuming");
+
+		// 停止 → 运行:用户源 turn 自动把 paused goal 恢复 active。
+		await session.prompt("keep going");
+		await session.waitForIdle();
+
+		const state = session.getGoalModeState();
+		expect(state?.enabled).toBe(true);
+		expect(state?.goal.status).toBe("active");
+	});
+
+	it("does not auto-resume a paused goal on a system-origin (custom) turn", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		await session.goalRuntime.pauseGoal();
+		mockTextStop("reminder ack");
+
+		// 系统源 turn(todo reminder / 隐藏消息)不得把 paused goal 拉回 active。
+		await session.promptCustomMessage({
+			customType: "todo-reminder",
+			content: [{ type: "text", text: "reminder" }],
+			display: false,
+		});
+		await session.waitForIdle();
+
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+	});
 });

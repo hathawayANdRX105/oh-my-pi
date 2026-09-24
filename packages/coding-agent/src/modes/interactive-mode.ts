@@ -1136,6 +1136,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
+		// plan review / loop mode 期间 goal 不得自动续跑(TUI timer 时代的互斥守卫)。
+		session.setGoalContinuationBlocker(() => this.loopModeEnabled || this.planModeEnabled || this.planModePaused);
 		const preferences = {
 			quiet: settings.get("startup.quiet"),
 			composerShape: settings.get("composer.shape") ?? "band",

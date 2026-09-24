@@ -672,6 +672,8 @@ export class AgentSession {
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
 	readonly #goalContinuation: GoalContinuation;
+	/** Host modes (plan review / loop) that temporarily forbid goal auto-continuation. */
+	#goalContinuationBlocker: () => boolean = () => false;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
 	/** Item set matching the last successfully rebuilt provider prompt. The base
@@ -1400,6 +1402,13 @@ export class AgentSession {
 			// when idle, in every run mode.
 			promptCustomMessage: message => this.promptCustomMessage(message, { streamingBehavior: "followUp" }),
 			hasPendingAsyncWake: () => this.#hasPendingAsyncWake(),
+			continuationBlocked: () => this.#goalContinuationBlocker(),
+			pauseGoal: () =>
+				this.#goalRuntime.pauseGoal().catch(err => {
+					// dispose 等场景 session 已关,暂停写不进去也无妨(状态本就要销毁)。
+					logger.warn("Goal pause on abort failed", { err });
+					return undefined;
+				}),
 			buildContinuationPrompt: () => this.#goalRuntime.buildContinuationPrompt(),
 			getPromptGeneration: () => this.#promptGeneration,
 		});
@@ -2643,6 +2652,8 @@ export class AgentSession {
 
 	// Track last assistant message for auto-compaction check
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
+	/** Origin of the prompt that started the current agent run; drives goal auto-resume. */
+	#lastPromptOrigin: "user" | "system" = "system";
 	/**
 	 * Classifier-refusal turn pruned from active context at settle (#3591).
 	 * Retained until the next run starts so post-settle readers
@@ -3071,6 +3082,14 @@ export class AgentSession {
 			this.#advisors.onPrimaryAgentStart();
 			this.#emitRunState("running");
 			this.#maintenance.noteTurnStarted();
+			if (this.#lastPromptOrigin === "user") {
+				const goalState = this.getGoalModeState();
+				if (goalState?.goal.status === "paused") {
+					void this.#goalRuntime.resumeGoal().catch(err => {
+						logger.debug("goal auto-resume on user turn failed", { err });
+					});
+				}
+			}
 		}
 		// This must happen before event fan-out awaits: streamed tool-call deltas
 		// can otherwise queue validation that a delayed turn-start reset erases.
@@ -3694,6 +3713,12 @@ export class AgentSession {
 			if (msg.stopReason === "aborted") {
 				this.#recovery.resolveRetry();
 				this.#resetSessionStopContinuationState();
+				// 用户主动中断 = 想停:goal 自动转 paused(ESC = 暂停语义),
+				// 恢复用 /goal resume 或用户直接发新消息。失败无妨(见 catch)。
+				await this.#goalRuntime.pauseGoal().catch(err => {
+					logger.warn("Goal pause on abort failed", { err });
+					return undefined;
+				});
 				await emitAgentEndNotification(ttsrAbortPendingAtAgentEnd ? { willContinue: true } : undefined);
 				return;
 			}
@@ -4078,9 +4103,10 @@ export class AgentSession {
 		if (options.terminalTextAnswer && !activeGoal) return false;
 		return this.#scheduleAutoContinuePrompt(options.generation);
 	}
-
 	#scheduleAutoContinuePrompt(generation: number): boolean {
 		const continuePrompt = async () => {
+			// System-origin turn: a paused goal must not auto-resume on synthetic prompts.
+			this.#lastPromptOrigin = "system";
 			// Compaction summarizes away the first-message eager preludes, so re-assert the
 			// delegate-via-tasks / phased-todo reminders on this auto-resumed turn. This runs
 			// at invocation (past the abort check below), so an aborted continuation queues
@@ -5868,6 +5894,11 @@ export class AgentSession {
 		return this.#goalModeState;
 	}
 
+	/** Host modes (plan review / loop mode) that forbid goal auto-continuation while active. */
+	setGoalContinuationBlocker(blocker: () => boolean): void {
+		this.#goalContinuationBlocker = blocker;
+	}
+
 	setGoalModeState(state: GoalModeState | undefined): void {
 		this.#goalModeState = state;
 	}
@@ -6349,6 +6380,7 @@ export class AgentSession {
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		this.#lastPromptOrigin = "user";
 		return this.#admitSubmission(() => this.#prompt(text, options));
 	}
 
@@ -6614,6 +6646,7 @@ export class AgentSession {
 		// turn against the disconnected session nor lose the session to the
 		// interrupted-turn resume once compaction ends.
 		const release = await this.#maintenance.waitForManualCompactionCleanup();
+		this.#lastPromptOrigin = "system";
 		const outcome: PromptDispatchOutcome = { sessionClaimed: false };
 		if (!release) return this.#dispatchCustomPrompt(message, options, outcome);
 		try {
@@ -7492,6 +7525,7 @@ export class AgentSession {
 		}
 
 		const queuedMessages = [...this.#pendingNextTurnMessages];
+		this.#lastPromptOrigin = "system";
 		this.#pendingNextTurnMessages = [];
 		const message = queuedMessages[queuedMessages.length - 1];
 		if (!message) {
@@ -7638,7 +7672,7 @@ export class AgentSession {
 		},
 	): Promise<boolean> {
 		return this.#admitSubmission(() => this.#sendCustomMessage(message, options));
-	}
+	};
 
 	async #sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
@@ -7649,6 +7683,8 @@ export class AgentSession {
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
+		// 系统源:sendCustomMessage 的 turn 不得把 paused goal 拉回 active。
+		this.#lastPromptOrigin = "system";
 		// An extension command parked on a manual compaction may fire this
 		// (`pi.sendMessage(..., { triggerTurn: true })`) and return without awaiting
 		// it. Claim synchronously, before the normalization await below, so the
