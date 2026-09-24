@@ -642,10 +642,12 @@ class DaemonBroker {
 					if (batch.length > 0 && Number.isFinite(batch[0])) vectors.push(batch as unknown as number[]);
 					else vectors.push(...batch);
 				}
-				// Final guard: any residual non-array row (provider emitting a
-				// flat vector where a matrix row is expected) becomes its own
-				// row so the RPC payload always parses as `number[][]`.
-				const matrix = vectors.map(row => (Array.isArray(row) ? row : [row as unknown as number]));
+				// Final guard: coerce any residual typed-array (Float32Array from
+				// the embed provider) or scalar row into a plain number array so
+				// the wire payload parses as `number[][]`.
+				const matrix = vectors.map(row =>
+					Array.isArray(row) ? row : (Array.from(row as ArrayLike<number>)),
+				);
 				return { op: "embed", vectors: matrix };
 			}
 			case "mcp-ensure":
