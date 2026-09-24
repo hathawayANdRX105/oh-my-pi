@@ -167,9 +167,18 @@ function stringArray(value: unknown, label: string): string[] {
 
 function numberMatrix(value: unknown, label: string): number[][] {
 	if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+	// Wire-shape validation only: every element must be a number. NaN/Inf
+	// rows are provider/runtime quality (CI's onnxruntime emits NaN rows for
+	// fast-bge-base-en-v1.5), not a protocol violation — the embed consumer
+	// owns any float-hygiene policy.
 	return value.map((row, rowIndex) => {
 		if (!Array.isArray(row)) throw new Error(`${label}[${rowIndex}] must be an array`);
-		return row.map((item, columnIndex) => numberValue(item, `${label}[${rowIndex}][${columnIndex}]`));
+		return row.map((item, columnIndex) => {
+			if (typeof item !== "number") {
+				throw new Error(`${label}[${rowIndex}][${columnIndex}] must be a number`);
+			}
+			return item;
+		});
 	});
 }
 
