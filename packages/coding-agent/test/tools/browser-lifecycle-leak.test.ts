@@ -19,11 +19,7 @@
 import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
 import type { CmuxKind } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/rpc";
 import { CmuxSocketClient } from "@oh-my-pi/pi-coding-agent/tools/browser/cmux/socket-client";
-import {
-	acquireBrowser,
-	disposeUnreferencedBrowsers,
-	getBrowsersMapForTest,
-} from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
+import { acquireBrowser, getBrowsersMapForTest } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import {
 	acquireTab,
 	getTabsMapForTest,
@@ -209,55 +205,5 @@ describe("browser lifecycle — close deadlines", () => {
 		);
 		expect(getTabsMapForTest().has("probe")).toBe(false);
 		expect(getBrowsersMapForTest().size).toBe(0);
-	});
-});
-
-describe("browser lifecycle — dispose reaps browsers left at refCount 0", () => {
-	afterEach(async () => {
-		await drainAllTabs();
-		await disposeUnreferencedBrowsers({ kill: false });
-	});
-
-	it("closes an unreferenced browser but leaves one another session still holds", async () => {
-		spyOn(CmuxSocketClient.prototype, "connect").mockResolvedValue(undefined);
-		spyOn(CmuxSocketClient.prototype, "close").mockImplementation(() => undefined);
-		spyOn(CmuxSocketClient.prototype, "request").mockImplementation(
-			async (method: string): Promise<Record<string, unknown>> => {
-				if (method === "browser.open_split") return { surface_id: "surface-live", url: "about:blank" };
-				return {};
-			},
-		);
-
-		const orphan = await acquireBrowser(makeKind("orphan"), { cwd: "/tmp" });
-		const live = await acquireBrowser(makeKind("live"), { cwd: "/tmp" });
-		await acquireTab("live-tab", live, { timeoutMs: 1_000, ownerSessionId: "session-live" });
-
-		expect(orphan.refCount).toBe(0);
-		expect(getBrowsersMapForTest().size).toBe(2);
-
-		const disposed = await disposeUnreferencedBrowsers({ kill: true });
-
-		expect(disposed).toBe(1);
-		expect(getBrowsersMapForTest().has(orphan.key)).toBe(false);
-		expect(getBrowsersMapForTest().has(live.key)).toBe(true);
-		expect(getTabsMapForTest().has("live-tab")).toBe(true);
-	});
-
-	it("fails fast when tab open races a sweep that disposed the browser", async () => {
-		const stale = {
-			key: "headless:1",
-			kind: { kind: "headless", headless: true },
-			browser: { connected: false },
-			pid: 1,
-			refCount: 0,
-			stealth: { browserSession: null, override: null },
-		} as unknown as Parameters<typeof acquireTab>[1];
-
-		// Not in the registry (a sweep already deleted + killed it): acquireTab
-		// must reject before spawning a worker against the dead browser.
-		await expect(acquireTab("stale-tab", stale, { timeoutMs: 1_000 })).rejects.toThrow(
-			"Browser was disposed during tab open",
-		);
-		expect(getTabsMapForTest().has("stale-tab")).toBe(false);
 	});
 });

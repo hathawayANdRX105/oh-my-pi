@@ -4,7 +4,7 @@ import {
 	type DaemonReadySpec,
 	type DaemonSpec,
 	type DaemonSnapshot,
-} from "@oh-my-pi/pi-tui/tools/hub";
+} from "@oh-my-pi/pi-tui/tools/daemon";
 /**
  * Cross-process daemon broker protocol shared by the tool, client, and broker.
  */
@@ -29,11 +29,7 @@ export type DaemonSignal = "SIGINT" | "SIGTERM" | "SIGHUP" | "SIGQUIT" | "SIGKIL
 /** Typed broker operation sent over the authenticated socket. */
 export type DaemonOperation =
 	| { op: "ping" }
-	| { op: "embed-init"; model: string; cacheDir?: string }
-	| { op: "embed"; model: string; cacheDir?: string; texts: string[]; batchSize?: number }
-	| { op: "mcp-ensure"; server: string; config: Record<string, unknown> }
-	| { op: "mcp-request"; server: string; method: string; params?: Record<string, unknown>; notification?: boolean }
-	| { op: "start"; spec: DaemonSpec; owner?: string }
+	| { op: "start"; spec: DaemonSpec; owner?: string; replace?: boolean }
 	| { op: "list" }
 	| {
 			op: "logs";
@@ -51,22 +47,13 @@ export type DaemonOperation =
 	| { op: "send"; name: string; data?: string; signal?: DaemonSignal }
 	| { op: "stop"; name: string; timeoutMs: number }
 	| { op: "restart"; name: string }
+	| { op: "mode"; name: string; mode: "persist" | "session" | "detached" }
 	| { op: "describe"; name: string }
 	| { op: "shutdown" };
 
 /** Typed broker result decoded before it reaches tool code. */
 export type DaemonRpcResult =
 	| { op: "ping"; projectDir: string }
-	| { op: "embed-init"; ready: boolean; pid?: number }
-	| { op: "embed"; vectors: number[][] }
-	| {
-			op: "mcp-ensure";
-			attached: boolean;
-			serverInfo: Record<string, unknown>;
-			capabilities: Record<string, unknown>;
-			instructions?: string;
-	  }
-	| { op: "mcp-request"; result?: unknown; notified?: boolean }
 	| { op: "start"; daemon: DaemonSnapshot; readyTimedOut: boolean }
 	| { op: "list"; daemons: DaemonSnapshot[] }
 	| {
@@ -85,6 +72,7 @@ export type DaemonRpcResult =
 	| { op: "send"; daemon: DaemonSnapshot }
 	| { op: "stop"; daemon: DaemonSnapshot }
 	| { op: "restart"; daemon: DaemonSnapshot }
+	| { op: "mode"; daemon: DaemonSnapshot }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
 	| { op: "shutdown" };
 
@@ -163,25 +151,6 @@ function stringArray(value: unknown, label: string): string[] {
 	const result: string[] = [];
 	for (const item of value) result.push(rawString(item, `${label} item`));
 	return result;
-}
-
-function numberMatrix(value: unknown, label: string): number[][] {
-	if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
-	// Wire-shape validation only: every element must be a number. NaN/Inf
-	// rows are provider/runtime quality (CI's onnxruntime emits NaN rows for
-	// fast-bge-base-en-v1.5), not a protocol violation — the embed consumer
-	// owns any float-hygiene policy.
-	return value.map((row, rowIndex) => {
-		if (!Array.isArray(row)) throw new Error(`${label}[${rowIndex}] must be an array`);
-		return row.map((item, columnIndex) => {
-			if (typeof item !== "number") {
-				throw new Error(
-					`${label}[${rowIndex}][${columnIndex}] must be a number (got ${typeof item}: ${String(item)})`,
-				);
-			}
-			return item;
-		});
-	});
 }
 
 function stringRecord(value: unknown, label: string): Record<string, string> {
@@ -335,42 +304,12 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 		case "list":
 		case "shutdown":
 			return { op };
-		case "embed-init":
-			return {
-				op,
-				model: stringValue(source.model, "operation.model"),
-				cacheDir: optionalString(source.cacheDir, "operation.cacheDir"),
-			};
-		case "embed":
-			return {
-				op,
-				model: stringValue(source.model, "operation.model"),
-				cacheDir: optionalString(source.cacheDir, "operation.cacheDir"),
-				texts: stringArray(source.texts, "operation.texts"),
-				batchSize: optionalNumber(source.batchSize, "operation.batchSize"),
-			};
-		case "mcp-ensure":
-			return {
-				op,
-				server: stringValue(source.server, "operation.server"),
-				config: record(source.config, "operation.config"),
-			};
-		case "mcp-request":
-			return {
-				op,
-				server: stringValue(source.server, "operation.server"),
-				method: stringValue(source.method, "operation.method"),
-				params: source.params === undefined ? undefined : record(source.params, "operation.params"),
-				notification:
-					source.notification === undefined
-						? undefined
-						: booleanValue(source.notification, "operation.notification"),
-			};
 		case "start":
 			return {
 				op,
 				spec: parseDaemonSpec(source.spec),
 				owner: optionalString(source.owner, "operation.owner"),
+				replace: source.replace === undefined ? undefined : booleanValue(source.replace, "operation.replace"),
 			};
 		case "logs":
 			return {
@@ -414,6 +353,12 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 		case "restart":
 		case "describe":
 			return { op, name: stringValue(source.name, "operation.name") };
+		case "mode": {
+			const mode = stringValue(source.mode, "operation.mode");
+			if (mode !== "persist" && mode !== "session" && mode !== "detached")
+				throw new Error("operation.mode must be persist, session, or detached");
+			return { op, name: stringValue(source.name, "operation.name"), mode };
+		}
 		default:
 			throw new Error(`Unknown daemon operation: ${op}`);
 	}
@@ -425,28 +370,6 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 	switch (operation.op) {
 		case "ping":
 			return { op: "ping", projectDir: stringValue(source.projectDir, "result.projectDir") };
-		case "embed-init":
-			return {
-				op: "embed-init",
-				ready: booleanValue(source.ready, "result.ready"),
-				pid: optionalNumber(source.pid, "result.pid"),
-			};
-		case "embed":
-			return { op: "embed", vectors: numberMatrix(source.vectors, "result.vectors") };
-		case "mcp-ensure":
-			return {
-				op: "mcp-ensure",
-				attached: booleanValue(source.attached, "result.attached"),
-				serverInfo: record(source.serverInfo, "result.serverInfo"),
-				capabilities: record(source.capabilities, "result.capabilities"),
-				instructions: optionalRawString(source.instructions, "result.instructions"),
-			};
-		case "mcp-request":
-			return {
-				op: "mcp-request",
-				result: source.result,
-				notified: source.notified === undefined ? undefined : booleanValue(source.notified, "result.notified"),
-			};
 		case "start":
 			return {
 				op: "start",
@@ -483,6 +406,8 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			return { op: "stop", daemon: parseDaemonSnapshot(source.daemon) };
 		case "restart":
 			return { op: "restart", daemon: parseDaemonSnapshot(source.daemon) };
+		case "mode":
+			return { op: "mode", daemon: parseDaemonSnapshot(source.daemon) };
 		case "describe":
 			return {
 				op: "describe",

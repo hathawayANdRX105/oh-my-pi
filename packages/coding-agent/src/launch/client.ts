@@ -97,21 +97,6 @@ function requestTimeoutMs(operation: DaemonOperation): number {
 	switch (operation.op) {
 		case "start":
 			return (operation.spec.ready?.timeoutMs ?? CONNECT_TIMEOUT_MS) + 5_000;
-		case "mcp-ensure":
-			// The broker's own connect budget is OMP_MCP_TIMEOUT_MS / per-server
-			// config (default 30s); leave generous headroom for slow handshakes.
-			return 300_000;
-		case "mcp-request":
-			// Long MCP tool calls are legitimate and the transport applies no
-			// per-call deadline; a dead broker never waits out this timer —
-			// socket close rejects every pending request immediately.
-			return 600_000;
-		case "embed-init":
-			// First-time model install/download may take minutes.
-			return 300_000;
-		case "embed":
-			// Match the client-side embed request budget plus margin.
-			return 130_000;
 		case "wait":
 		case "logs":
 		case "stop":

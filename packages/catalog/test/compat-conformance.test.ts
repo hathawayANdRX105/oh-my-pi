@@ -1,6 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import rules from "../src/compat/rules.json";
 import models from "../src/models.json";
 
@@ -24,19 +22,17 @@ const RUNTIME_ONLY_PROVIDERS = new Set([
 	// including its tariff and effort ladder, comes from the live /v1/models
 	// snapshot, so no bundled rows are frozen into models.json.
 	"charm-hyper",
+	// Both SingularityAPI rosters are live and credential-scoped (one key sees
+	// only its own product's models — the pay-as-you-go catalog or the reserved
+	// lanes), so no rows are frozen into models.json.
+	"singularityapi-dev",
+	"singularityapi-tech",
 	// User-configured LiteLLM proxy (models.yml provider or litellm auth flow;
 	// PROXY_OPENAI_COMPAT_PROVIDERS) that forwards upstream chat templates.
 	"litellm",
 	// User-configured models.yml provider pointing at
 	// https://inference-api.nousresearch.com/v1 (NousResearch inference API).
 	"nous",
-	// User-configured models.yml provider pointing at the local wildtoken
-	// gateway (http://localhost:3100/v1, OpenAI-compatible; compat rules
-	// imported from providers/wildtoken.kdl).
-	"wildtoken",
-	// User-configured models.yml provider pointing at a self-hosted new-api
-	// gateway (OpenAI-compatible).
-	"new-api",
 ]);
 
 function collectReferencedProviders(): Map<string, string> {
@@ -114,16 +110,5 @@ describe("compat rules conformance", () => {
 			}
 		}
 		expect(offenders).toEqual([]);
-	});
-
-	test("every rules/**/*.kdl file was compiled", async () => {
-		const rulesDir = path.join(import.meta.dir, "../src/compat/rules");
-		const onDisk: string[] = [];
-		for (const group of ["taxonomy", "classes", "providers", "runtime", "auth"]) {
-			for (const name of await fs.readdir(path.join(rulesDir, group))) {
-				if (name.endsWith(".kdl")) onDisk.push(`${group}/${name}`);
-			}
-		}
-		expect([...rules.files].sort()).toEqual(onDisk.sort());
 	});
 });

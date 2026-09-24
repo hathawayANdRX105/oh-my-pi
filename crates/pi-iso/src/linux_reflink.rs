@@ -96,50 +96,21 @@ mod imp {
 	// both.
 	const FICLONE: libc::Ioctl = 0x4004_9409;
 
-	/// True when both paths resolve to the same directory (dev + inode), so
-	/// path shape (relative, symlinked parents) cannot fool the comparison.
-	fn same_dir(a: &Path, b: &Path) -> bool {
-		match (fs::metadata(a), fs::metadata(b)) {
-			(Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
-			_ => false,
-		}
-	}
-
 	pub fn start(lower: &Path, merged: &Path) -> IsoResult<()> {
-		reflink_into(lower, merged, None)
+		let lower = canonical_existing_dir(lower)?;
+		prepare_destination(merged)?;
+
+		let result = recursive_reflink(&lower, merged, None);
+		if result.is_err() {
+			let _ = fs::remove_dir_all(merged);
+		}
+		result
 	}
 
 	pub fn clone_tree(lower: &Path, merged: &Path, skip: &[&std::ffi::OsStr]) -> IsoResult<()> {
-		reflink_into(lower, merged, Some(skip))
-	}
-
-	/// Reflink `lower` into `merged`, refusing a destination that lives
-	/// inside the source tree. `prepare_destination` recreates `merged`
-	/// before the walk and the walker reads directories lazily, so an
-	/// in-source destination would otherwise be re-mirrored into itself on
-	/// every level until the disk fills (151 nested repo copies observed in
-	/// the wild). The guard skips any entry that *is* the destination.
-	fn reflink_into(lower: &Path, merged: &Path, skip: Option<&[&std::ffi::OsStr]>) -> IsoResult<()> {
 		let lower = canonical_existing_dir(lower)?;
-		let merged_abs = if merged.is_absolute() {
-			merged.to_path_buf()
-		} else {
-			std::env::current_dir()
-				.map(|cwd| cwd.join(merged))
-				.unwrap_or_else(|_| merged.to_path_buf())
-		};
-		// Reject before prepare_destination: with merged == lower, prepare
-		// would delete the source itself.
-		if same_dir(&lower, &merged_abs) {
-			return Err(IsoError::other(format!(
-				"reflink destination {} must differ from source {}",
-				merged.display(),
-				lower.display()
-			)));
-		}
 		prepare_destination(merged)?;
-		let guard = fs::canonicalize(merged).unwrap_or(merged_abs);
-		let result = recursive_reflink(&lower, merged, skip, &guard);
+		let result = recursive_reflink(&lower, merged, Some(skip));
 		if result.is_err() {
 			let _ = fs::remove_dir_all(merged);
 		}
@@ -209,7 +180,6 @@ mod imp {
 		src: &Path,
 		dst: &Path,
 		skip: Option<&[&std::ffi::OsStr]>,
-		guard: &Path,
 	) -> IsoResult<()> {
 		let meta = fs::symlink_metadata(src)
 			.map_err(|err| IsoError::other(format!("symlink_metadata {}: {err}", src.display())))?;
@@ -232,10 +202,7 @@ mod imp {
 			if file_type.is_symlink() {
 				clone_symlink(&src_path, &dst_path)?;
 			} else if file_type.is_dir() {
-				if same_dir(&src_path, guard) {
-					continue;
-				}
-				recursive_reflink(&src_path, &dst_path, None, guard)?;
+				recursive_reflink(&src_path, &dst_path, None)?;
 			} else if file_type.is_file() {
 				clone_file(&src_path, &dst_path)?;
 			} else {
@@ -325,104 +292,5 @@ mod imp {
 		} else {
 			Err(std::io::Error::last_os_error())
 		}
-	}
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-	use std::{
-		fs,
-		path::{Path, PathBuf},
-		sync::atomic::{AtomicU64, Ordering},
-		time::{SystemTime, UNIX_EPOCH},
-	};
-
-	use super::imp;
-
-	struct TempDirGuard(PathBuf);
-
-	impl TempDirGuard {
-		fn new() -> Self {
-			static COUNTER: AtomicU64 = AtomicU64::new(0);
-			let nanos = SystemTime::now()
-				.duration_since(UNIX_EPOCH)
-				.expect("system time should be after epoch")
-				.as_nanos();
-			let dir = std::env::temp_dir().join(format!(
-				"pi-iso-reflink-test-{}-{nanos}-{}",
-				std::process::id(),
-				COUNTER.fetch_add(1, Ordering::Relaxed)
-			));
-			fs::create_dir_all(&dir).expect("create temp test directory");
-			Self(dir)
-		}
-
-		fn path(&self) -> &Path {
-			&self.0
-		}
-	}
-
-	impl Drop for TempDirGuard {
-		fn drop(&mut self) {
-			let _ = fs::remove_dir_all(&self.0);
-		}
-	}
-
-	/// Regression: `clone_tree` with the destination inside the source tree
-	/// used to mirror the destination into itself on every level until the
-	/// disk filled (151 nested repo copies in the wild). The walker must
-	/// skip the destination instead of entering it.
-	#[test]
-	fn clone_tree_skips_destination_inside_source() {
-		let root = TempDirGuard::new();
-		let lower = root.path().join("lower");
-		fs::create_dir_all(lower.join(".wt/session-daemon")).expect("create nesting");
-		fs::write(lower.join("a.txt"), "one\n").expect("write a");
-		fs::write(lower.join(".wt/keep.txt"), "sibling\n").expect("write sibling");
-
-		let merged = lower.join(".wt/session-daemon");
-		match imp::clone_tree(&lower, &merged, &[]) {
-			Ok(()) => {},
-			Err(err) if err.to_string().contains("FICLONE unsupported") => {
-				// The guard logic is filesystem-independent, but the walker
-				// bails on its first file without reflink support.
-				eprintln!("skipping: filesystem does not support reflinks: {err}");
-				return;
-			},
-			Err(err) => panic!("clone must not recurse into itself: {err}"),
-		}
-
-		assert_eq!(fs::read_to_string(merged.join("a.txt")).unwrap(), "one\n");
-		assert_eq!(
-			fs::read_to_string(merged.join(".wt/keep.txt")).unwrap(),
-			"sibling\n"
-		);
-		assert!(
-			!merged.join(".wt/session-daemon").exists(),
-			"destination must not be cloned into itself"
-		);
-		assert_eq!(fs::read_to_string(lower.join("a.txt")).unwrap(), "one\n");
-	}
-
-	/// A destination equal to the source must be rejected before
-	/// `prepare_destination` wipes the source.
-	#[test]
-	fn clone_tree_rejects_destination_equal_to_source() {
-		let root = TempDirGuard::new();
-		let lower = root.path().join("lower");
-		fs::create_dir_all(&lower).expect("create lower");
-		fs::write(lower.join("a.txt"), "one\n").expect("write a");
-
-		let err = imp::clone_tree(&lower, &lower, &[])
-			.expect_err("destination equal to source must be rejected");
-		assert!(
-			err.to_string().contains("must differ"),
-			"unexpected error: {err}"
-		);
-		assert_eq!(
-			fs::read_to_string(lower.join("a.txt")).unwrap(),
-			"one\n",
-			"source must survive the rejection"
-		);
 	}
 }

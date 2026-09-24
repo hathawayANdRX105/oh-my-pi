@@ -7,13 +7,11 @@
 import * as path from "node:path";
 import * as url from "node:url";
 import type { TSchema } from "@oh-my-pi/pi-ai";
-import { isCompiledBinary, logger, workerHostEntry } from "@oh-my-pi/pi-utils";
+import { logger } from "@oh-my-pi/pi-utils";
 import type { EffectiveExtensionRoots, SourceMeta } from "../capability/types";
 import { resolveConfigValue } from "../config/resolve-config-value";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import type { AuthStorage } from "../session/auth-storage";
-import { daemonClientForProject, DaemonBrokerRejectedError, type DaemonBrokerClient } from "../launch/client";
-import type { DaemonRpcResult } from "../launch/protocol";
 import {
 	MCPConnectionTimeoutError,
 	connectToServer,
@@ -29,7 +27,6 @@ import {
 	subscribeToResources,
 	unsubscribeFromResources,
 } from "./client";
-import { MCPTransportError } from "./errors";
 import {
 	isBrowserMCPServer,
 	type LoadMCPConfigsOptions,
@@ -44,6 +41,7 @@ import {
 } from "./oauth-credentials";
 import type { MCPStoredOAuthCredential } from "./oauth-flow";
 import type { McpConnectionStatusEvent } from "./startup-events";
+import { resolveMCPStartupTimeoutMs } from "./timeout";
 
 import type { MCPToolDetails } from "@oh-my-pi/pi-tui/tools/mcp";
 import { DeferredMCPTool, MCPTool } from "./tool-bridge";
@@ -52,13 +50,11 @@ import { setGeneratedHeader } from "./transports/header-policy";
 import type {
 	MCPAuthChallenge,
 	MCPGetPromptResult,
-	MCPImplementation,
 	MCPPrompt,
 	MCPRequestOptions,
 	MCPResource,
 	MCPResourceReadResult,
 	MCPResourceTemplate,
-	MCPServerCapabilities,
 	MCPServerConfig,
 	MCPServerConnection,
 	MCPToolDefinition,
@@ -87,8 +83,6 @@ type TrackedPromise<T> = {
 	value?: T;
 	reason?: unknown;
 };
-
-const STARTUP_TIMEOUT_MS = 250;
 
 function createMcpStartupFailure(serverName: string, error: string, source?: SourceMeta): McpConnectionStatusEvent {
 	return source
@@ -214,6 +208,16 @@ export interface MCPLoadResult {
 	exaApiKeys: string[];
 }
 
+/** Readiness of configured MCP servers after the initial tool handshake. */
+export interface MCPStartupStatus {
+	/** Servers whose tools have been registered and whose startup callbacks completed. */
+	connected: string[];
+	/** Servers still loading tools or reconnecting at the deadline. */
+	pending: string[];
+	/** Servers whose connection or tool handshake failed. */
+	failed: Array<{ name: string; error: string }>;
+}
+
 /** Options for discovering and connecting to MCP servers */
 export interface MCPDiscoverOptions {
 	/** Whether to load project-level config (default: true) */
@@ -226,97 +230,12 @@ export interface MCPDiscoverOptions {
 	extensionRoots?: EffectiveExtensionRoots;
 	/** Called when MCP server connection state changes. */
 	onStatus?: (event: McpConnectionStatusEvent) => void;
+	/** Non-blocking discovery window in milliseconds; environment override wins. */
+	startupTimeoutMs?: number;
 }
 
 /** Handles an MCP `WWW-Authenticate` challenge and returns refreshed config. */
 export type MCPAuthHandler = (serverName: string, challenge: MCPAuthChallenge) => Promise<MCPServerConfig | undefined>;
-
-/**
- * MCP transport routed through the project daemon broker. The server
- * subprocess and its MCP session are broker-owned (see `DaemonBroker`'s
- * `mcp-ensure` / `mcp-request` operations): one shared process per server id
- * across every omp process in the project. This client-side handle forwards
- * JSON-RPC over the broker socket; `close()` is a no-op because the shared
- * session outlives any single client (the broker's idle-grace lifecycle reaps
- * it). A dead broker rejects the in-flight request with a stable closed
- * transport error, fires `onClose` once so the manager's reconnect path
- * re-ensures the server on the next broker, and every later request
- * lazily re-resolves the broker client.
- */
-class BrokerMCPTransport implements MCPTransport {
-	readonly connected = true;
-	onClose?: () => void;
-	onError?: (error: Error) => void;
-	// Server-to-client requests are answered by the broker's session handler
-	// and server notifications stay broker-local, so no client-side wiring.
-	readonly #server: string;
-	readonly #client: () => Promise<DaemonBrokerClient>;
-	#lost = false;
-
-	constructor(server: string, client: () => Promise<DaemonBrokerClient>) {
-		this.#server = server;
-		this.#client = client;
-	}
-
-	async request<T = unknown>(
-		method: string,
-		params?: Record<string, unknown>,
-		options?: MCPRequestOptions,
-	): Promise<T> {
-		let result: Extract<DaemonRpcResult, { op: "mcp-request" }>;
-		try {
-			const client = await this.#client();
-			result = (await client.request(
-				{ op: "mcp-request", server: this.#server, method, params },
-				options?.signal,
-			)) as Extract<DaemonRpcResult, { op: "mcp-request" }>;
-		} catch (error) {
-			this.#markLost(error);
-			if (error instanceof DaemonBrokerRejectedError) throw error;
-			throw this.#closedError(error);
-		}
-		return result.result as T;
-	}
-
-	async notify(method: string, params?: Record<string, unknown>): Promise<void> {
-		try {
-			const client = await this.#client();
-			await client.request({ op: "mcp-request", server: this.#server, method, params, notification: true });
-		} catch (error) {
-			this.#markLost(error);
-			if (error instanceof DaemonBrokerRejectedError) throw error;
-			throw this.#closedError(error);
-		}
-	}
-
-	/** The broker owns the shared session; dropping this handle keeps the server for other clients. */
-	async close(): Promise<void> {}
-
-	#closedError(error: unknown): MCPTransportError {
-		return new MCPTransportError({
-			transport: "unknown",
-			stage: "receive",
-			failure: "closed",
-			message: `MCP broker connection lost: ${error instanceof Error ? error.message : String(error)}`,
-			retryable: true,
-			cause: error,
-		});
-	}
-
-	/**
-	 * Arm the manager's reconnect path only for broker-level loss: a closed or
-	 * re-spawned broker socket, or the broker reporting the session is gone
-	 * (fresh broker, no connections yet). Ordinary broker-answered rejections
-	 * (server-side JSON-RPC/tool errors) are RPC outcomes, not a lost session.
-	 */
-	#markLost(error: unknown): void {
-		if (this.#lost) return;
-		if (error instanceof DaemonBrokerRejectedError && !/is not connected; ensure it first/.test(error.message))
-			return;
-		this.#lost = true;
-		this.onClose?.();
-	}
-}
 
 /**
  * MCP Server Manager.
@@ -345,6 +264,9 @@ export class MCPManager {
 	#tools: CustomTool<TSchema, MCPToolDetails>[] = [];
 	#pendingConnections = new Map<string, Promise<MCPServerConnection>>();
 	#pendingToolLoads = new Map<string, Promise<ToolLoadResult>>();
+	#startupUpdates = new Map<string, Promise<void>>();
+	#startupServers = new Set<string>();
+	#startupFailures = new Map<string, string>();
 	#sources = new Map<string, SourceMeta>();
 	#authStorage: AuthStorage | null = null;
 	#authHandler?: MCPAuthHandler;
@@ -385,25 +307,13 @@ export class MCPManager {
 	 * attempt is pending.
 	 */
 	#lostRemoteServers = new Map<string, { timer: NodeJS.Timeout | undefined; delayMs: number }>();
-	/**
-	 * Route server subprocesses through the project daemon broker instead of
-	 * spawning them in-process. Same host-capability gate as the shared
-	 * browser and the broker-routed embed worker: a compiled CLI or a process
-	 * with a self-dispatching CLI worker entry can spawn the project broker
-	 * and must route through it (one shared MCP server process per project);
-	 * hosts without one (bun test, SDK embedding) keep process-local
-	 * transports.
-	 */
-	readonly #brokerRouted: boolean;
 
 	constructor(
 		private cwd: string,
 		private toolCache: MCPToolCache | null = null,
 		private loadConfigs: MCPConfigLoader = loadAllMCPConfigs,
 		private reconnectPolicy: MCPReconnectPolicy = DEFAULT_RECONNECT_POLICY,
-	) {
-		this.#brokerRouted = isCompiledBinary() || workerHostEntry() !== null;
-	}
+	) {}
 
 	/**
 	 * Register a listener for MCP connection lifecycle events
@@ -420,6 +330,11 @@ export class MCPManager {
 	}
 
 	#emitConnectionStatus(event: McpConnectionStatusEvent): void {
+		if (event.type === "failed" && this.#startupServers.has(event.serverName)) {
+			this.#startupFailures.set(event.serverName, event.error);
+		} else if (event.type === "connected") {
+			this.#startupFailures.delete(event.serverName);
+		}
 		for (const listener of this.#connectionStatusListeners) {
 			try {
 				listener(event);
@@ -625,12 +540,13 @@ export class MCPManager {
 			});
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			this.#startupServers.add(".mcp.json");
 			options?.onStatus?.({ type: "failed", serverName: ".mcp.json", error: message });
 			this.#emitConnectionStatus({ type: "failed", serverName: ".mcp.json", error: message });
 			throw error;
 		}
 		const { configs, exaApiKeys, sources } = loadedConfigs;
-		const result = await this.connectServers(configs, sources, options?.onStatus);
+		const result = await this.connectServers(configs, sources, options?.onStatus, options?.startupTimeoutMs);
 		result.exaApiKeys = exaApiKeys;
 		return result;
 	}
@@ -665,7 +581,7 @@ export class MCPManager {
 		}
 
 		if (!enabled) {
-			await this.connectServers(browserConfigs, browserSources, options?.onStatus);
+			await this.connectServers(browserConfigs, browserSources, options?.onStatus, options?.startupTimeoutMs);
 			this.#discoverOptions = { ...options, filterBrowser: false };
 			return;
 		}
@@ -692,6 +608,7 @@ export class MCPManager {
 		configs: Record<string, MCPServerConfig>,
 		sources: Record<string, SourceMeta>,
 		onStatus?: (event: McpConnectionStatusEvent) => void,
+		startupTimeoutMs?: number,
 	): Promise<MCPLoadResult> {
 		const notify = (event: McpConnectionStatusEvent) => {
 			onStatus?.(event);
@@ -715,6 +632,7 @@ export class MCPManager {
 		const connectionTasks: ConnectionTask[] = [];
 
 		for (const [name, config] of Object.entries(configs)) {
+			this.#startupServers.add(name);
 			if (sources[name]) {
 				this.#sources.set(name, sources[name]);
 				const existing = this.#connections.get(name);
@@ -759,7 +677,7 @@ export class MCPManager {
 			// Resolve auth config before connecting, but do so per-server in parallel.
 			const connectionPromise = (async () => {
 				const resolvedConfig = await this.#resolveAuthConfig(config);
-				return this.#connectRouted(name, resolvedConfig, {
+				return connectToServer(name, resolvedConfig, {
 					onNotification: (method, params) => {
 						this.#handleServerNotification(name, method, params);
 					},
@@ -842,7 +760,7 @@ export class MCPManager {
 			const tracked = trackPromise(toolsPromise);
 			connectionTasks.push({ name, config, tracked, toolsPromise });
 
-			void toolsPromise
+			const startupUpdate = toolsPromise
 				.then(async ({ connection, serverTools }) => {
 					if (this.#pendingToolLoads.get(name) !== toolsPromise) return;
 					this.#pendingToolLoads.delete(name);
@@ -850,11 +768,11 @@ export class MCPManager {
 						this.reconnectServer(name, options);
 					const customTools = MCPTool.fromTools(connection, serverTools, reconnect);
 					this.#replaceServerTools(name, customTools);
-					void this.#onToolsChanged?.(this.#tools);
+					await this.#onToolsChanged?.(this.#tools);
 					void this.toolCache?.set(name, config, serverTools);
 
 					notify({ type: "connected", serverName: name });
-					await this.#loadServerResourcesAndPrompts(name, connection);
+					void this.#loadServerResourcesAndPrompts(name, connection);
 				})
 				.catch(error => {
 					if (this.#pendingToolLoads.get(name) !== toolsPromise) return;
@@ -877,7 +795,11 @@ export class MCPManager {
 						if (stopForwarding) void retry.then(stopForwarding, stopForwarding);
 						else void retry;
 					}
+				})
+				.finally(() => {
+					if (this.#startupUpdates.get(name) === startupUpdate) this.#startupUpdates.delete(name);
 				});
+			this.#startupUpdates.set(name, startupUpdate);
 		}
 
 		// Notify about servers we're connecting to, including configs that fail fast.
@@ -889,10 +811,10 @@ export class MCPManager {
 		}
 
 		if (connectionTasks.length > 0) {
-			await Promise.race([
-				Promise.allSettled(connectionTasks.map(task => task.tracked.promise)),
-				delay(STARTUP_TIMEOUT_MS),
-			]);
+			const initialLoads = Promise.allSettled(connectionTasks.map(task => task.tracked.promise));
+			const windowMs = resolveMCPStartupTimeoutMs(startupTimeoutMs);
+			if (windowMs === 0) await initialLoads;
+			else await Promise.race([initialLoads, delay(windowMs)]);
 
 			const cachedTools = new Map<string, MCPToolDefinition[]>();
 			const pendingTasks = connectionTasks.filter(task => task.tracked.status === "pending");
@@ -1080,6 +1002,49 @@ export class MCPManager {
 	}
 
 	/**
+	 * Wait for configured servers' initial tools (including timeout-triggered reconnects).
+	 * Zero disables the barrier deadline; an unresponsive server can then wait indefinitely.
+	 * Tool-change callbacks are drained before returning; callers should still refresh their
+	 * session with the final tool snapshot before sending a prompt.
+	 */
+	async waitForStartup(timeoutMs: number): Promise<MCPStartupStatus> {
+		const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : Infinity;
+		for (;;) {
+			const pending = [...this.#startupUpdates.values(), ...this.#pendingReconnections.values()];
+			if (pending.length === 0 || Date.now() >= deadline) break;
+
+			const { promise, resolve } = Promise.withResolvers<void>();
+			const remaining = deadline - Date.now();
+			const timer = remaining === Infinity ? undefined : setTimeout(resolve, Math.min(remaining, 2_147_483_647));
+			try {
+				await Promise.race([Promise.allSettled(pending), promise]);
+			} finally {
+				clearTimeout(timer);
+			}
+		}
+
+		const status: MCPStartupStatus = { connected: [], pending: [], failed: [] };
+		for (const name of this.#startupServers) {
+			if (
+				this.#startupUpdates.has(name) ||
+				this.#pendingToolLoads.has(name) ||
+				this.#pendingConnections.has(name) ||
+				this.#pendingReconnections.has(name)
+			) {
+				status.pending.push(name);
+			} else if (this.#connections.get(name)?.tools !== undefined) {
+				status.connected.push(name);
+			} else {
+				status.failed.push({
+					name,
+					error: this.#startupFailures.get(name) ?? "Connection closed before tools became available",
+				});
+			}
+		}
+		return status;
+	}
+
+	/**
 	 * Get a specific connection.
 	 */
 	getConnection(name: string): MCPServerConnection | undefined {
@@ -1218,6 +1183,9 @@ export class MCPManager {
 	 * Disconnect from a specific server.
 	 */
 	async disconnectServer(name: string): Promise<void> {
+		this.#startupServers.delete(name);
+		this.#startupFailures.delete(name);
+		this.#startupUpdates.delete(name);
 		this.#pendingConnections.delete(name);
 		this.#pendingToolLoads.delete(name);
 		this.#pendingReconnections.delete(name);
@@ -1263,6 +1231,9 @@ export class MCPManager {
 
 		this.#pendingConnections.clear();
 		this.#pendingToolLoads.clear();
+		this.#startupUpdates.clear();
+		this.#startupServers.clear();
+		this.#startupFailures.clear();
 		this.#pendingReconnections.clear();
 		this.#pendingResourceRefresh.clear();
 		this.#sources.clear();
@@ -1505,39 +1476,6 @@ export class MCPManager {
 		return null;
 	}
 
-	/**
-	 * Establish a server connection, routing the subprocess through the project
-	 * daemon broker when this host can spawn one. Broker mode hands the server
-	 * off to the broker (`mcp-ensure`) and returns a client-side handle over the
-	 * shared session; the `onNotification` / `onRequest` handlers only apply to
-	 * the local path — in broker mode the broker's own session handlers answer
-	 * server requests and notifications stay broker-local.
-	 */
-	async #connectRouted(
-		name: string,
-		config: MCPServerConfig,
-		options?: {
-			onNotification?: (method: string, params: unknown) => void;
-			onRequest?: (method: string, params: unknown) => Promise<unknown>;
-		},
-	): Promise<MCPServerConnection> {
-		if (!this.#brokerRouted) return connectToServer(name, config, options);
-		const client = await daemonClientForProject(this.cwd);
-		const result = (await client.request({
-			op: "mcp-ensure",
-			server: name,
-			config: config as unknown as Record<string, unknown>,
-		})) as Extract<DaemonRpcResult, { op: "mcp-ensure" }>;
-		return {
-			name,
-			config,
-			serverInfo: result.serverInfo as unknown as MCPImplementation,
-			capabilities: result.capabilities as unknown as MCPServerCapabilities,
-			instructions: result.instructions,
-			transport: new BrokerMCPTransport(name, () => daemonClientForProject(this.cwd)),
-		};
-	}
-
 	/** Establish a new connection to a server, wire handlers, load tools. */
 	async #connectAndWireServer(
 		name: string,
@@ -1546,7 +1484,7 @@ export class MCPManager {
 		reconnectEpoch: number,
 	): Promise<MCPServerConnection> {
 		const resolvedConfig = await this.#resolveAuthConfig(config);
-		const connection = await this.#connectRouted(name, resolvedConfig, {
+		const connection = await connectToServer(name, resolvedConfig, {
 			onNotification: (method, params) => {
 				this.#handleServerNotification(name, method, params);
 			},

@@ -1,7 +1,4 @@
 import { logger } from "@oh-my-pi/pi-utils";
-import { daemonClientForProject, type DaemonBrokerClient } from "../launch/client";
-import type { DaemonRpcResult } from "../launch/protocol";
-import { getProjectDir, isCompiledBinary, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
 	createUnavailableWorker,
 	createWorkerHandle,
@@ -25,9 +22,7 @@ import type { MnemopiEmbedModelId, MnemopiEmbedWorkerInbound, MnemopiEmbedWorker
  * provider loads fastembed in the main process (issue #3031; the mnemopi
  * sibling of the tiny-model fix from #1606 / #1607).
  */
-export type MnemopiEmbedWorkerHandle = RefCountedWorkerHandle<MnemopiEmbedWorkerInbound, MnemopiEmbedWorkerOutbound> & {
-	readonly pid?: number;
-};
+export type MnemopiEmbedWorkerHandle = RefCountedWorkerHandle<MnemopiEmbedWorkerInbound, MnemopiEmbedWorkerOutbound>;
 
 type PendingRequest =
 	| { kind: "init"; model: MnemopiEmbedModelId; resolve: (ok: boolean) => void }
@@ -83,9 +78,6 @@ function wrapSubprocess(spawned: SpawnedSubprocess<MnemopiEmbedWorkerOutbound>):
 				// Already gone.
 			}
 		},
-		get pid() {
-			return proc.pid;
-		},
 	};
 }
 
@@ -97,122 +89,12 @@ function createUnavailableMnemopiEmbedWorker(error: unknown): MnemopiEmbedWorker
 	};
 }
 
-export function spawnMnemopiEmbedWorker(): MnemopiEmbedWorkerHandle {
+function spawnMnemopiEmbedWorker(): MnemopiEmbedWorkerHandle {
 	return spawnWorkerOrUnavailable(
 		() => wrapSubprocess(createMnemopiEmbedSubprocess()),
 		createUnavailableMnemopiEmbedWorker,
 		"mnemopi embed worker spawn failed; local embeddings disabled",
 	);
-}
-
-/**
- * Broker-routed embed worker handle: the `__omp_worker_mnemopi_embed`
- * subprocess is owned by the project daemon broker, so one worker serves
- * every omp process in the project and outlives any single client. Each
- * `send()` round-trips one `embed-init`/`embed` RPC; broker loss faults the
- * in-flight request with a stable per-request error, and broker-client
- * resolution failure is a hard worker error. The next send re-ensures the
- * broker — the shared `DaemonBrokerClient` re-spawns it on demand.
- */
-export class BrokerMnemopiEmbedHandle implements MnemopiEmbedWorkerHandle {
-	readonly #messageHandlers = new Set<(message: MnemopiEmbedWorkerOutbound) => void>();
-	readonly #errorHandlers = new Set<(error: Error) => void>();
-	#client: DaemonBrokerClient | null = null;
-	readonly #projectDir: string;
-
-	constructor(projectDir: string) {
-		this.#projectDir = projectDir;
-	}
-
-	send(message: MnemopiEmbedWorkerInbound): void {
-		void this.#route(message);
-	}
-
-	onMessage(handler: (message: MnemopiEmbedWorkerOutbound) => void): () => void {
-		this.#messageHandlers.add(handler);
-		return () => {
-			this.#messageHandlers.delete(handler);
-		};
-	}
-
-	onError(handler: (error: Error) => void): () => void {
-		this.#errorHandlers.add(handler);
-		return () => {
-			this.#errorHandlers.delete(handler);
-		};
-	}
-
-	ref(): void {}
-
-	unref(): void {}
-
-	/** Drop local state only: the broker-owned worker outlives this client. */
-	async terminate(): Promise<void> {
-		this.#messageHandlers.clear();
-		this.#errorHandlers.clear();
-		this.#client = null;
-	}
-
-	async #route(message: MnemopiEmbedWorkerInbound): Promise<void> {
-		if (message.type === "ping") {
-			this.#emit({ type: "pong", id: message.id });
-			return;
-		}
-		let client = this.#client;
-		if (!client) {
-			try {
-				client = await daemonClientForProject(this.#projectDir);
-			} catch (error) {
-				for (const handler of this.#errorHandlers)
-					handler(error instanceof Error ? error : new Error(String(error)));
-				return;
-			}
-			this.#client = client;
-		}
-		try {
-			if (message.type === "init") {
-				await client.request({ op: "embed-init", model: message.model, cacheDir: message.cacheDir });
-				this.#emit({ type: "ready", id: message.id });
-			} else {
-				const result = (await client.request({
-					op: "embed",
-					model: message.model,
-					cacheDir: message.cacheDir,
-					texts: message.texts,
-					batchSize: message.batchSize,
-				})) as Extract<DaemonRpcResult, { op: "embed" }>;
-				this.#emit({ type: "vectors", id: message.id, vectors: result.vectors });
-			}
-		} catch (error) {
-			this.#emit({ type: "error", id: message.id, error: error instanceof Error ? error.message : String(error) });
-		}
-	}
-
-	#emit(message: MnemopiEmbedWorkerOutbound): void {
-		for (const handler of this.#messageHandlers) handler(message);
-	}
-}
-
-/**
- * Create the broker-routed embed worker for one project directory. Exported
- * for tests that drive the shared-worker lifecycle directly.
- */
-export function createBrokerMnemopiEmbedWorker(projectDir: string): MnemopiEmbedWorkerHandle {
-	return new BrokerMnemopiEmbedHandle(projectDir);
-}
-
-/**
- * Spawn the mnemopi embed worker for this process. Hosts that can run the CLI
- * worker (compiled binary, or a process with a self-dispatching CLI entry)
- * route every request through the project-shared broker — one worker per
- * project, owned by the broker's idle-grace lifecycle. Hosts without a CLI
- * entry (bun test, SDK embedding) keep the per-process spawn.
- */
-export function defaultMnemopiEmbedWorkerSpawn(): MnemopiEmbedWorkerHandle {
-	if (isCompiledBinary() || workerHostEntry() !== null) {
-		return createBrokerMnemopiEmbedWorker(getProjectDir());
-	}
-	return spawnMnemopiEmbedWorker();
 }
 
 /**
@@ -244,7 +126,6 @@ const REQUEST_TIMED_OUT = Symbol("mnemopi.embed.timedOut");
 
 export class MnemopiEmbedClient {
 	#worker: MnemopiEmbedWorkerHandle | null = null;
-	#workerPid: number | undefined;
 	#unsubscribeMessage: (() => void) | null = null;
 	#unsubscribeError: (() => void) | null = null;
 	#pending = new Map<string, PendingRequest>();
@@ -259,11 +140,6 @@ export class MnemopiEmbedClient {
 	) {
 		this.#spawnWorker = spawnWorker;
 		this.#requestTimeoutMs = requestTimeoutMs;
-	}
-
-	/** PID of the backing worker when the handle tracks one (spawned subprocess or broker-owned). */
-	get pid(): number | undefined {
-		return this.#workerPid;
 	}
 
 	/**
@@ -303,7 +179,6 @@ export class MnemopiEmbedClient {
 	async terminate(): Promise<void> {
 		const worker = this.#worker;
 		this.#worker = null;
-		this.#workerPid = undefined;
 		this.#unsubscribeMessage?.();
 		this.#unsubscribeMessage = null;
 		this.#unsubscribeError?.();
@@ -390,7 +265,6 @@ export class MnemopiEmbedClient {
 		if (this.#worker) return this.#worker;
 		const worker = this.#spawnWorker();
 		this.#worker = worker;
-		this.#workerPid = worker.pid;
 		this.#unsubscribeMessage = worker.onMessage(message => this.#handleMessage(message));
 		this.#unsubscribeError = worker.onError(error => this.#handleWorkerError(error));
 		return worker;
@@ -457,7 +331,7 @@ export class MnemopiEmbedClient {
 	}
 }
 
-export const mnemopiEmbedClient = new MnemopiEmbedClient(defaultMnemopiEmbedWorkerSpawn);
+export const mnemopiEmbedClient = new MnemopiEmbedClient();
 
 export async function shutdownMnemopiEmbedClient(): Promise<void> {
 	await mnemopiEmbedClient.terminate();

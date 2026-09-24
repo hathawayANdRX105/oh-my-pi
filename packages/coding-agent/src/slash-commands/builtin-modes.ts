@@ -6,21 +6,13 @@ import {
 	type ResolveCliModelResult,
 } from "../config/model-resolver";
 import type { SettingPath, Settings } from "../config/settings";
-import type { GoalModeState } from "../goals/state";
-import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
 import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
-import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
+import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
-import type {
-	ParsedSlashCommand,
-	SlashCommandResult,
-	SlashCommandRuntime,
-	SlashCommandSpec,
-	TuiSlashCommandRuntime,
-} from "./types";
+import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
 
 export function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
@@ -259,8 +251,6 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "goal",
 		icon: "goal",
 		description: "Toggle goal mode (persistent autonomous objective for this session)",
-		acpDescription: "Manage goal mode (persistent autonomous objective): show, set, pause, resume, drop",
-		acpInputHint: "[set <objective>|show|pause|resume|drop]",
 		subcommands: [
 			{ name: "set", description: "Set or replace the goal", usage: "<objective>" },
 			{ name: "show", description: "Show current goal details" },
@@ -271,7 +261,6 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		inlineHint: "[objective]",
 		allowArgs: true,
-		handle: handleGoalAcp,
 		getTuiAutocompleteDescription: runtime => {
 			if (!runtime.ctx.settings.get("goal.enabled" as SettingPath)) return "Goal: disabled in settings";
 			if (runtime.ctx.planModeEnabled) return "Goal: blocked by plan mode";
@@ -300,7 +289,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "loop",
 		icon: "loop",
 		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc cancels the current iteration; /loop again to disable.",
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc suspends the ongoing loop; /loop again to disable.",
 		inlineHint: "[count|duration] [--while|--until '<cmd>'] [prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -674,83 +663,3 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 ];
-
-function formatGoalAcpStatus(state: GoalModeState | undefined): string {
-	const goal = state?.goal;
-	if (!goal) return "No goal set.";
-	const used = goal.tokensUsed.toLocaleString();
-	const budgetLine =
-		goal.tokenBudget !== undefined
-			? `${used} / ${goal.tokenBudget.toLocaleString()} (${Math.max(0, goal.tokenBudget - goal.tokensUsed).toLocaleString()} left)`
-			: `${used} (no budget)`;
-	return [
-		`Objective: ${goal.objective}`,
-		`Status: ${goal.status}${state?.enabled ? "" : " (paused)"}`,
-		`Tokens: ${budgetLine}`,
-		`Time spent: ${formatCoarseDuration(goal.timeUsedSeconds * 1000)}`,
-	].join("\n");
-}
-
-/**
- * Text-mode `/goal` handler (ACP + RPC + TUI adapter): full parity with the
- * TUI command minus selectors/menus — show, set (create/replace), pause,
- * resume, drop. `set` returns the objective as a residual prompt so it reaches
- * the model as ordinary user input and kicks off the work.
- */
-async function handleGoalAcp(command: ParsedSlashCommand, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
-	const session = runtime.session;
-	if (!session.settings.get("goal.enabled" as SettingPath)) {
-		return usage("Goal mode is disabled. Enable it in settings (goal.enabled).", runtime);
-	}
-	const goalRuntime = session.goalRuntime;
-	const state = session.getGoalModeState();
-	const { verb, rest } = parseSubcommand(command.args);
-	try {
-		switch (verb) {
-			case "":
-			case "show":
-				await runtime.output(formatGoalAcpStatus(state));
-				return commandConsumed();
-			case "set": {
-				const objective = rest.trim();
-				if (!objective) return usage("Usage: /goal set <objective>", runtime);
-				if (
-					state?.goal &&
-					!state.enabled &&
-					(state.goal.status === "paused" || state.goal.status === "budget-limited")
-				) {
-					return usage("A paused goal exists. Resume it first (/goal resume) or drop it (/goal drop).", runtime);
-				}
-				if (state?.goal && state.goal.status !== "dropped" && state.goal.status !== "complete") {
-					await goalRuntime.replaceGoal({ objective });
-					await runtime.output(`Goal replaced. Working toward: ${objective}`);
-				} else {
-					await goalRuntime.createGoal({ objective });
-					await runtime.output(`Goal set. Working toward: ${objective}`);
-				}
-				return { prompt: objective };
-			}
-			case "pause": {
-				const paused = await goalRuntime.pauseGoal();
-				await runtime.output(paused ? "Goal paused." : "No active goal to pause.");
-				return commandConsumed();
-			}
-			case "resume": {
-				await goalRuntime.resumeGoal();
-				await runtime.output("Goal mode resumed.");
-				return commandConsumed();
-			}
-			case "drop": {
-				const dropped = await goalRuntime.dropGoal();
-				await runtime.output(dropped ? "Goal dropped." : "No goal set.");
-				return commandConsumed();
-			}
-			case "budget":
-				return usage("Goal budget is hard-locked off in this build (numeric budgets disabled).", runtime);
-			default:
-				return usage(`Unknown goal subcommand: ${verb}`, runtime);
-		}
-	} catch (error) {
-		return usage(errorMessage(error), runtime);
-	}
-}

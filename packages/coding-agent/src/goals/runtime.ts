@@ -259,11 +259,6 @@ export class GoalRuntime {
 	async onThreadResumed(options?: { preserveActiveGoal?: boolean }): Promise<GoalModeState | undefined> {
 		const state = this.#getStateClone();
 		if (!state) return undefined;
-		// Local hard-lock: drop any restored numeric budget before accounting resumes.
-		state.goal.tokenBudget = undefined;
-		if (state.goal.status === "budget-limited") {
-			state.goal.status = "active";
-		}
 		if (options?.preserveActiveGoal && state.enabled && state.goal.status === "active") {
 			this.#markActiveAccounting(state.goal, true);
 			await this.#commitState(state, { emit: true });
@@ -296,18 +291,21 @@ export class GoalRuntime {
 			if (!state?.goal) return undefined;
 			state.goal.tokenBudget = newBudget;
 			state.goal.updatedAt = this.#now();
-			const budgetLimited = newBudget !== undefined && state.goal.tokensUsed >= newBudget;
-			if (budgetLimited) {
-				state.goal.status = "budget-limited";
-				state.enabled = true;
-				this.#clearActiveAccounting();
-				await this.#sendBudgetLimitSteer(state.goal);
+			let shouldSteer = false;
+			if (newBudget !== undefined && state.goal.tokensUsed >= newBudget) {
+				if (state.goal.status === "active") {
+					state.goal.status = "budget-limited";
+					shouldSteer = true;
+				}
 			} else if (state.goal.status === "budget-limited") {
 				state.goal.status = "active";
 				state.enabled = true;
 				this.#markActiveAccounting(state.goal);
 			}
 			await this.#commitState(state, { persist: state.enabled ? "goal" : "goal_paused" });
+			if (shouldSteer) {
+				await this.#sendBudgetLimitSteer(state.goal);
+			}
 			return state;
 		});
 	}

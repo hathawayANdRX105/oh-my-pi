@@ -461,29 +461,10 @@ export async function pickElectronTarget(
 	}
 
 	const fallbackPages = await browser.pages();
-	if (fallbackPages.length > 0) return pickPageFromList(fallbackPages, options);
-
-	// ponytail: obscura (Rust headless browser) 不合规——Target.setDiscoverTargets
-	// 启用后不重发已存在的 page 目标（真 Chrome 会重发全部），导致 puppeteer 的
-	// targets()/pages() 双双为空。createTarget 会触发它枚举一次，之后 getTargets
-	// 才返回真实 page 列表。Chrome 上 discovery 命中就走不到这里。
-	const connection = (
-		browser as unknown as {
-			_connection?: { send(method: string, params?: object): Promise<unknown> };
-		}
-	)._connection;
-	if (connection) {
-		await connection.send("Target.createTarget", { url: "about:blank" }).catch(() => {});
-		const { promise: enumerated, resolve } = Promise.withResolvers<void>();
-		setTimeout(resolve, 500);
-		await enumerated;
-	}
-
-	const recovered = await browser.pages();
-	if (!recovered.length) {
+	if (!fallbackPages.length) {
 		throw new ToolError("No page targets available on the attached browser");
 	}
-	return pickPageFromList(recovered, options);
+	return pickPageFromList(fallbackPages, options);
 }
 
 async function enrichPages(pages: Page[]): Promise<Array<{ page: Page; url: string; title: string }>> {

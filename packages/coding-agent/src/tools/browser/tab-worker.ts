@@ -61,6 +61,7 @@ import {
 	loadedNetworkConditions,
 } from "./launch";
 import { extractReadableFromHtml, type ReadableExtractOptions, type ReadableFormat } from "./readable";
+import { assertTabPressArgs } from "./tab-arguments";
 import {
 	type BrowserCookie,
 	type ClearCookiesOptions,
@@ -159,6 +160,7 @@ import {
 	clickAt,
 	clickElement,
 	clickQueryHandlerText,
+	fillViaHandle,
 	highlightElement,
 	type HighlightOptions,
 	type InteractionHandle,
@@ -868,23 +870,6 @@ async function typeViaHandle(
 	}
 }
 
-/** Focus, clear any existing value, then retype — shared by `tab.fill(aria-ref)` and enriched handles. */
-async function fillViaHandle(
-	handle: ElementHandle,
-	value: string,
-	signal?: AbortSignal,
-	type: (text: string) => Promise<unknown> = text => handle.type(text, { delay: 0 }),
-): Promise<void> {
-	await untilAborted(signal, () =>
-		handle.evaluate(el => {
-			const node = el as unknown as { value?: string; focus?: () => void };
-			node.focus?.();
-			if ("value" in node) node.value = "";
-		}),
-	);
-	await untilAborted(signal, () => type(value));
-}
-
 /**
  * Strip `user:pass@` from a URL before surfacing it in tool outputs / details
  * so Basic Auth credentials don't leak into transcripts. Returns the original
@@ -1082,33 +1067,13 @@ async function targetIdForPage(page: Page): Promise<string> {
 }
 
 async function createTrackedHeadlessPage(browser: Browser, reportTarget: (targetId: string) => void): Promise<Page> {
-	// ponytail: obscura 不支持 attach 到 browser target（createCDPSession 直接报错），
-	// 但主连接本身就能发 Target.createTarget——obscura 收到后会枚举出 page。
-	// Chrome 两条路都通，优先用标准 session，失败回落主连接。
-	let send: (method: string, params?: object) => Promise<unknown>;
-	let detach: (() => Promise<void>) | undefined;
-	const browserSession = await browser
-		.target()
-		.createCDPSession()
-		.catch(() => null);
-	if (browserSession) {
-		send = browserSession.send.bind(browserSession);
-		detach = browserSession.detach.bind(browserSession);
-	} else {
-		const connection = (
-			browser as unknown as {
-				_connection?: { send(method: string, params?: object): Promise<unknown> };
-			}
-		)._connection;
-		if (!connection) throw new ToolError("No CDP channel available to create a headless target");
-		send = connection.send.bind(connection);
-	}
+	const session = await browser.target().createCDPSession();
 	let targetId: string;
 	try {
-		({ targetId } = (await send("Target.createTarget", { url: "about:blank" })) as { targetId: string });
+		({ targetId } = await session.send("Target.createTarget", { url: "about:blank" }));
 		reportTarget(targetId);
 	} finally {
-		await detach?.().catch(() => undefined);
+		await session.detach().catch(() => undefined);
 	}
 	const existing = browser.targets().find(target => privateTargetId(target) === targetId);
 	const target =
@@ -1469,30 +1434,11 @@ export class WorkerCore {
 
 	async #findAttachedTarget(targetId: string): Promise<Target> {
 		if (!this.#browser) throw new ToolError("Browser is not connected");
-		for (const target of await this.#listTargets()) {
+		for (const target of this.#browser.targets()) {
 			if ((await targetIdForTarget(target).catch(() => "")) !== targetId) continue;
 			return target;
 		}
 		throw new ToolError(`Target ${targetId} is no longer available on the attached browser`);
-	}
-
-	/** Current targets; on obscura, force its lazy enumeration before puppeteer can see pages. */
-	async #listTargets(): Promise<Target[]> {
-		const targets = this.#browser.targets();
-		if (targets.some(target => String(target.type()) === "page")) return targets;
-		// ponytail: 同 createTrackedHeadlessPage——obscura 的 discovery 不重发已有 page，
-		// createTarget 触发一次枚举后 puppeteer 才看得到。Chrome 上有 page 时直接返回。
-		const connection = (
-			this.#browser as unknown as {
-				_connection?: { send(method: string, params?: object): Promise<unknown> };
-			}
-		)._connection;
-		if (!connection) return targets;
-		await connection.send("Target.createTarget", { url: "about:blank" }).catch(() => {});
-		const { promise: enumerated, resolve } = Promise.withResolvers<void>();
-		setTimeout(resolve, 500);
-		await enumerated;
-		return this.#browser.targets();
 	}
 
 	/**
@@ -2042,23 +1988,18 @@ export class WorkerCore {
 					`tab.fill(${JSON.stringify(selector)})`,
 					actionOpMs,
 					async sig => {
-						if (parseAriaRefSelector(selector) !== null) {
-							const handle = await this.#resolveAriaRef(selector);
-							try {
-								await fillViaHandle(handle, value, sig);
-							} finally {
-								await handle.dispose().catch(() => undefined);
-							}
-							return;
+						const handle = await this.#resolveActionHandle(selector, actionOpMs, sig);
+						try {
+							await fillViaHandle(handle, value, sig);
+						} finally {
+							await handle.dispose().catch(() => undefined);
 						}
-						await untilAborted(sig, () =>
-							page.locator(normalizeSelector(selector)).setTimeout(actionOpMs).fill(value, { signal: sig }),
-						);
 					},
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
 				),
 			press: (key, opts) =>
 				op(`tab.press(${JSON.stringify(key)})`, actionOpMs, async sig => {
+					assertTabPressArgs(key, opts);
 					const selector = opts?.selector;
 					if (selector) {
 						if (parseAriaRefSelector(selector) !== null) {

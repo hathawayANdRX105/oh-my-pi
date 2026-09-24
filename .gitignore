@@ -17,6 +17,7 @@ target/
 
 # Environment
 .env
+.venv
 
 # Editors
 .vscode/
@@ -93,7 +94,3 @@ packages/coding-agent/bench/boot-baseline.json
 /.bazelrc.user
 
 .parity/
-todo/*
-!todo/handoff/
-!todo/handoff/**
-.codegraph/

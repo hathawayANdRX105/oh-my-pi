@@ -26,9 +26,8 @@ export const CONFIG_DIR_NAME: string = ".omp";
 /** Ordered main settings filenames: canonical write target first, legacy-compatible YAML fallback second. */
 export const MAIN_CONFIG_FILENAMES = ["config.yml", "config.yaml"] as const;
 
-/** Version (e.g. "1.0.0"); fork builds carry a `-fork.<n>` suffix so
- * `omp --version` shows which fork build is running, not the upstream tag. */
-export const VERSION: string = `${version}-fork.3`;
+/** Version (e.g. "1.0.0") */
+export const VERSION: string = version;
 
 /** Default User-Agent header string (e.g. "omp/17.2.12") */
 export const USER_AGENT = `omp/${VERSION}`;
@@ -751,11 +750,6 @@ export function hashPath(absPath: string): string {
 /** Get the path to a single worktree directory (~/.omp/wt/<segment>). */
 export function getWorktreeDir(segment: string): string {
 	return path.join(getWorktreesDir(), segment);
-}
-
-/** Get the GPU cache path (~/.omp/gpu_cache.json). */
-export function getGpuCachePath(): string {
-	return dirs.rootSubdir("gpu_cache.json", "cache");
 }
 
 /**
