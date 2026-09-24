@@ -553,6 +553,31 @@ describe("InputController escape behavior", () => {
 		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
 	});
 
+	it("pauses an active goal on the first Esc even while the goal turn is streaming", () => {
+		const { ctx, editor, spies } = createContext();
+		const pauseGoal = vi.fn(async () => ({ goal: { status: "paused" } }));
+		const viewSession = ctx.viewSession as unknown as {
+			isStreaming?: boolean;
+			getGoalModeState?: () => { goal: { status: string } };
+			goalRuntime?: { pauseGoal(): Promise<unknown> };
+		};
+		// Mock a streaming active goal on the view session: the old guard
+		// (!viewSession.isStreaming) skipped the pause during a goal auto-turn.
+		viewSession.isStreaming = true;
+		viewSession.getGoalModeState = () => ({
+			goal: { status: "active" },
+		});
+		viewSession.goalRuntime = { pauseGoal };
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(pauseGoal).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+	});
+
 	it("aborts the submitted turn on the first Esc once the main session starts streaming", async () => {
 		const { ctx, editor, spies } = createContext();
 		const submission = createSubmission({ text: "fix issue #4921" });

@@ -481,12 +481,15 @@ export class InputController {
 					safeAbort("retry", () => viewSession.abortRetry());
 					aborted = true;
 				}
-				// ESC while idle (not streaming) with an active goal: the user wants
-				// the run to stop. Pause the goal so a queued goal-continuation or
-				// error-settle loop cannot re-arm the next turn.
-				if (!viewSession.isStreaming && viewSession.getGoalModeState?.()?.goal.status === "active") {
+				// ESC with an active goal (idle or streaming): the user wants the
+				// run to stop. Pause the goal immediately, before the interrupted
+				// turn settles, so the goal-continuation driver sees it not-active
+				// on the next agent_end and cannot re-arm the next turn. The
+				// deferred pause on an "aborted" settle (agent-session) still runs
+				// and is idempotent.
+				if (viewSession.getGoalModeState?.()?.goal.status === "active") {
 					void viewSession.goalRuntime.pauseGoal().catch(err => {
-						logger.debug("goal pause on idle ESC failed", { err });
+						logger.debug("goal pause on ESC failed", { err });
 					});
 				}
 				if (aborted) return;
