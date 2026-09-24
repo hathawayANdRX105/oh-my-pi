@@ -88,6 +88,10 @@ export class TodoTracker {
 
 	/** Rehydrates todo phases from the current transcript branch. */
 	syncFromBranch(): void {
+		// Every call site is a branch transition (resume/rewind/fork/switch/tree):
+		// the previous cycle's reminder and stall flags no longer apply, so a
+		// stale "awaiting progress" flag cannot suppress the next stop-time pass.
+		this.resetCycle();
 		this.setPhases(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()));
 	}
 
@@ -105,11 +109,20 @@ export class TodoTracker {
 	}
 
 	/** Records a completed tool result before asynchronous event processing begins. */
-	onToolResult(toolName: string, isError: boolean): void {
+	onToolResult(toolName: string, isError: boolean, details?: Record<string, unknown>): void {
+		const todoOp = details ? stringProperty(details, "op") : undefined;
+		const todoProgress = toolName === "todo" && !isError && todoOp !== undefined && todoOp !== "view";
 		if (toolName === "todo") {
 			this.#mutationsSinceLastTouch = 0;
 		} else if (!isError && MUTATING_TOOLS[toolName]) {
 			this.#mutationsSinceLastTouch++;
+		}
+		if (todoProgress || (!isError && MUTATING_TOOLS[toolName])) {
+			// Tool-level progress refreshes the stop-time budget: remindersMax
+			// bounds consecutive NO-progress chains, so a working task runs to
+			// completion (ESC still wins). Read-only results and failed calls
+			// deliberately do not refresh it.
+			this.#reminderCount = 0;
 		}
 		this.#reminderAwaitingProgress = false;
 	}

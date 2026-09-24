@@ -60,7 +60,11 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [msg] });
 	}
 
-	function emitToolResult(toolName: string, details: Record<string, unknown> = {}): void {
+	function emitToolResult(
+		toolName: string,
+		details: Record<string, unknown> = {},
+		options?: { isError?: boolean },
+	): void {
 		const toolCallId = `call_${toolName}_${Date.now()}_${Math.random()}`;
 		const toolCall: ToolCall = { type: "toolCall", id: toolCallId, name: toolName, arguments: {} };
 		const assistantMsg: AssistantMessage = {
@@ -89,7 +93,7 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 				toolCallId,
 				toolName,
 				content,
-				isError: false,
+				isError: options?.isError ?? false,
 				details,
 				timestamp: Date.now(),
 			},
@@ -250,7 +254,7 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 			if (continueCount === 1) {
 				// In response to reminder 1/3 the agent actually did work (called `todo`),
 				// then stopped again with todos still incomplete.
-				emitToolResult("todo", { phases: session.getTodoPhases() });
+				emitToolResult("todo", { op: "start", phases: session.getTodoPhases() });
 				emitTextOnlyStop();
 				return;
 			}
@@ -261,7 +265,87 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		emitTextOnlyStop();
 		await session.waitForIdle();
 
-		// 1/3 fires, agent does work, 2/3 fires, agent acks → suppressed, no 3/3.
-		expect(reminderAttempts).toEqual([1, 2]);
+		// 1/3 fires, agent does work (progress refreshes the budget), 1/3 fires again,
+		// agent acks without acting → suppressed by the no-progress guard.
+		expect(reminderAttempts).toEqual([1, 1]);
+	});
+
+	it("keeps a fresh reminder budget while the agent makes progress (runs past the cap)", async () => {
+		// remindersMax is 3. The old total-per-prompt budget ended the chain at the
+		// 3rd reminder even for a progressing task; with progress-reset the budget
+		// only bounds consecutive no-progress chains, so a working agent keeps a
+		// fresh 1/3 on every stop and the chain runs to completion.
+		let continueCount = 0;
+		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+			continueCount += 1;
+			if (continueCount <= 4) {
+				emitToolResult("todo", { op: "start", phases: session.getTodoPhases() });
+			}
+			emitTextOnlyStop();
+		});
+
+		emitTextOnlyStop();
+		await session.waitForIdle();
+
+		// Five fresh attempts (progress reset the counter each time) instead of the
+		// old capped [1, 2, 3]; the final bare ack is suppressed by the no-progress guard.
+		expect(reminderAttempts).toEqual([1, 1, 1, 1, 1]);
+	});
+
+	it("keeps the cap when only read-only tools progress (no budget refresh)", async () => {
+		// Read-only results (read/grep/...) are NOT progress: the budget refresh
+		// is limited to todo/mutating results so a read/stop loop still hits the
+		// remindersMax cap instead of running unbounded.
+		let continueCount = 0;
+		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+			continueCount += 1;
+			if (continueCount <= 3) emitToolResult("read");
+			emitTextOnlyStop();
+		});
+
+		emitTextOnlyStop();
+		await session.waitForIdle();
+
+		// No refresh: 1/3 -> 2/3 -> 3/3, then the cap suppresses the fourth.
+		expect(reminderAttempts).toEqual([1, 2, 3]);
+	});
+
+	it("keeps the cap across repeated read-only todo views", async () => {
+		// `todo view` is a pure read (TodoTool returns the phases without writing
+		// state), so it must not refresh the budget: a view/stop loop still hits
+		// the cap instead of running unbounded.
+		let continueCount = 0;
+		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+			continueCount += 1;
+			if (continueCount <= 3) {
+				emitToolResult("todo", { op: "view", phases: session.getTodoPhases() });
+			}
+			emitTextOnlyStop();
+		});
+
+		emitTextOnlyStop();
+		await session.waitForIdle();
+
+		expect(reminderAttempts).toEqual([1, 2, 3]);
+	});
+
+	it("keeps the cap across repeated failed todo calls", async () => {
+		// A rejected todo payload commits nothing (TodoTool discards the whole
+		// batch on error), so failures are not progress and must not refresh the
+		// budget — otherwise an agent that keeps fixing an invalid payload loops
+		// forever under a permanently reset counter.
+		let continueCount = 0;
+		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
+			continueCount += 1;
+			if (continueCount <= 3) {
+				emitToolResult("todo", { op: "done", phases: session.getTodoPhases() }, { isError: true });
+			}
+			emitTextOnlyStop();
+		});
+
+		emitTextOnlyStop();
+		await session.waitForIdle();
+
+		expect(reminderAttempts).toEqual([1, 2, 3]);
 	});
 });
