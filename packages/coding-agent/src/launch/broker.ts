@@ -642,7 +642,11 @@ class DaemonBroker {
 					if (batch.length > 0 && Number.isFinite(batch[0])) vectors.push(batch as unknown as number[]);
 					else vectors.push(...batch);
 				}
-				return { op: "embed", vectors };
+				// Final guard: any residual non-array row (provider emitting a
+				// flat vector where a matrix row is expected) becomes its own
+				// row so the RPC payload always parses as `number[][]`.
+				const matrix = vectors.map(row => (Array.isArray(row) ? row : [row as unknown as number]));
+				return { op: "embed", vectors: matrix };
 			}
 			case "mcp-ensure":
 				return this.#mcpEnsure(operation.server, operation.config);
