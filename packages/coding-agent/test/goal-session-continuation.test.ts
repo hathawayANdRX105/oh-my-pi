@@ -462,4 +462,50 @@ describe("session-layer goal continuation", () => {
 		expect(state?.goal.status).toBe("active");
 		expect(state?.goal.objective).toBe("Ship the release");
 	});
+
+	it("drops the todo-linked goal when the user clears the todo list", async () => {
+		mockTextStop("done");
+		emitTodoInit();
+		await session.waitForIdle();
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
+
+		// /todo clear 语义:清单没了主体就没了,goal 应 drop 而不是继续驱动续跑。
+		session.setTodoPhases([]);
+		await session.waitForIdle();
+
+		expect(session.getGoalModeState()).toBeUndefined();
+	});
+
+	it("leaves a user goal untouched when the todo list is cleared", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("done");
+
+		session.setTodoPhases([]);
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.objective).toBe("Ship the release");
+	});
+
+	it("does not drop or complete the abandoned goal on /new", async () => {
+		mockTextStop("done");
+		emitTodoInit();
+		await session.waitForIdle();
+		const oldFile = session.sessionManager.getSessionFile();
+		if (!oldFile) throw new Error("expected session file");
+		const modes = async (): Promise<string[]> =>
+			(await Bun.file(oldFile).text())
+				.split("\n")
+				.filter(line => line.includes('"mode_change"'))
+				.map(line => String(JSON.parse(line).mode));
+		const before = await modes();
+
+		await session.newSession();
+
+		// /new 后新会话无 goal。旧 journal 只允许既有 abort 路径的 "goal_paused";
+		// 空清单路径不得追加 drop("none")或 complete(第二条 "goal")。
+		expect(session.getGoalModeState()).toBeUndefined();
+		const after = await modes();
+		expect(after).not.toContain("none");
+		expect(after.filter(mode => mode === "goal").length).toBe(before.filter(mode => mode === "goal").length);
+	});
 });

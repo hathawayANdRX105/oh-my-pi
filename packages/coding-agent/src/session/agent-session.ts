@@ -8026,6 +8026,10 @@ export class AgentSession {
 	}
 
 	setTodoPhases(phases: TodoPhase[]): void {
+		// 用户清空清单(/todo clear、面板删光、RPC set_todos)→ 联动 goal 失去主体,
+		// 语义是 drop 而非 complete(系统提醒已承诺"不要重建清单",不能留着 goal 驱动续跑)。
+		// /new 路径已先行清理 #goalModeState,不会误伤已废弃会话。
+		if (phases.length === 0) this.#dropTodoLinkedGoal();
 		this.#todo.setPhases(phases);
 	}
 
@@ -8151,6 +8155,17 @@ export class AgentSession {
 		if (!state.goal.objective.startsWith(TODO_GOAL_OBJECTIVE_PREFIX)) return;
 		void this.#goalRuntime.completeGoalFromTool().catch(err => {
 			logger.debug("todo -> goal auto-complete failed", { err });
+		});
+	}
+
+	/** todos 被清空 → drop 由 todo 联动创建的 goal(前缀匹配,active/paused 均可);用户 goal 不动。 */
+	#dropTodoLinkedGoal(): void {
+		const state = this.#goalModeState;
+		if (!state?.goal) return;
+		if (!state.goal.objective.startsWith(TODO_GOAL_OBJECTIVE_PREFIX)) return;
+		if (state.goal.status !== "active" && state.goal.status !== "paused") return;
+		void this.#goalRuntime.dropGoal().catch(err => {
+			logger.debug("todo -> goal drop on clear failed", { err });
 		});
 	}
 
@@ -8464,6 +8479,11 @@ export class AgentSession {
 
 			this.#clearSessionScopedToolState();
 			this.#clearCheckpointRuntimeState();
+			// /new 后 goal 状态属于新会话:先清内存态,否则紧随的 setTodoPhases([])
+			// 会以旧会话的联动 goal 触发 drop,向已废弃会话的 journal 写 mode_change。
+			// 旧 journal 的 goal 记录保持原样,由 resume 语义处理。
+			this.#goalModeState = undefined;
+			this.#goalRuntime.clearAccounting();
 			this.setTodoPhases([]);
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
