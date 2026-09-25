@@ -405,6 +405,8 @@ import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
 const PLAN_MODE_REMINDER_MAX = 3;
+/** Objective prefix of goals auto-created by the todo list; matched on auto-complete. */
+const TODO_GOAL_OBJECTIVE_PREFIX = "Complete todo list: ";
 const POST_PROMPT_DRAIN_TIMEOUT_MS = 5_000;
 const AGENT_START_POLICY_MAX_ATTEMPTS = 3;
 
@@ -1391,6 +1393,7 @@ export class AgentSession {
 			planModeEnabled: () => this.#planModeState?.enabled === true,
 			prewalkWillHandoff: () => this.#prewalk.willHandoff,
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
+			onAllTodosCompleted: () => this.#completeTodoLinkedGoal(),
 		};
 		this.#todo = new TodoTracker(todoHost);
 		this.#goalContinuation = new GoalContinuation({
@@ -3420,6 +3423,7 @@ export class AgentSession {
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
 				if (toolName === "todo" && !isError && details && this.#todo.onTodoResultDetails(details, toolCallId)) {
 					this.#scheduleReplanTitleRefresh();
+					this.#linkGoalToTodoList(details);
 				}
 				if (toolName === "todo" && isError) {
 					const errorText = content.find(part => part.type === "text")?.text;
@@ -8125,6 +8129,29 @@ export class AgentSession {
 				}
 			});
 		this.#replanTitleRefreshInFlight = refresh;
+	}
+
+	/** 建 todo 列表时若没有 active goal,自动挂一个(前缀标记);
+	 * goal continuation 会持续驱动直到列表全部完成。既有 goal(含 paused)不动。 */
+	#linkGoalToTodoList(details: Record<string, unknown>): void {
+		if (this.#goalModeState?.enabled) return;
+		const phases = Array.isArray(details.phases) ? (details.phases as Array<{ name?: unknown }>) : [];
+		const names = phases.map(phase => (typeof phase.name === "string" ? phase.name : "")).filter(Boolean);
+		const objective = `${TODO_GOAL_OBJECTIVE_PREFIX}${names.join(", ") || "the todo list"}`;
+		void this.#goalRuntime.createGoal({ objective }).catch(err => {
+			// 已有 goal 会挡创建(createGoal 守卫);尊重现状,不强写。
+			logger.debug("todo -> goal link skipped", { err });
+		});
+	}
+
+	/** todos 全完成 → 自动 complete 由 todo 联动创建的 goal(前缀匹配);用户 goal 不动。 */
+	#completeTodoLinkedGoal(): void {
+		const state = this.#goalModeState;
+		if (state?.enabled !== true || state.goal.status !== "active") return;
+		if (!state.goal.objective.startsWith(TODO_GOAL_OBJECTIVE_PREFIX)) return;
+		void this.#goalRuntime.completeGoalFromTool().catch(err => {
+			logger.debug("todo -> goal auto-complete failed", { err });
+		});
 	}
 
 	/**

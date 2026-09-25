@@ -61,6 +61,8 @@ export interface TodoTrackerHost {
 	/** Whether prewalk will hand off after its plan nudge owns todo creation. */
 	prewalkWillHandoff(): boolean;
 	consumeLastServedToolChoiceLabel(): string | undefined;
+	/** Fired once when every todo in the current list is completed (none pending/in_progress/blocked). */
+	onAllTodosCompleted?(): void;
 }
 
 /** Owns canonical todo state, eager preludes, and completion reminders. */
@@ -84,6 +86,14 @@ export class TodoTracker {
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
+		// 全完成 = 每项都 completed（abandoned/blocked 不算完成）。挂在唯一变更
+		// 汇聚点上（工具结果 / 面板编辑 / 分支切换都经此），不依赖 reminder 设置。
+		if (
+			phases.length > 0 &&
+			phases.every(phase => phase.tasks.length > 0 && phase.tasks.every(task => task.status === "completed"))
+		) {
+			this.#host.onAllTodosCompleted?.();
+		}
 	}
 
 	/** Rehydrates todo phases from the current transcript branch. */

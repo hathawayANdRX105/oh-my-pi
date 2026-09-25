@@ -63,6 +63,45 @@ describe("session-layer goal continuation", () => {
 		resetSettingsForTest();
 	});
 
+	/** Drives the real event chain: todo init toolCall + successful toolResult. */
+	function emitTodoInit(
+		phases: Array<Record<string, unknown>> = [{ name: "Build", tasks: [{ content: "scaffold", status: "pending" }] }],
+	): void {
+		const toolCallId = "call_todo_link";
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: toolCallId, name: "todo", arguments: { op: "init" } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			},
+		});
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "todo",
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				details: { op: "init", phases },
+				timestamp: Date.now(),
+			},
+		});
+	}
+
 	function mockTextStop(text: string): void {
 		let providerCall = 0;
 		session.agent.streamFn = () => {
@@ -367,5 +406,60 @@ describe("session-layer goal continuation", () => {
 		await session.waitForIdle();
 
 		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+	});
+
+	it("creates a goal linked to a freshly initialised todo list", async () => {
+		expect(session.getGoalModeState()).toBeUndefined();
+		mockTextStop("done");
+
+		// 驱动真实事件链:todo init 的 toolResult 必须挂出联动 goal。
+		emitTodoInit([
+			{ name: "Build", tasks: [{ content: "scaffold", status: "pending" }] },
+			{ name: "Verify", tasks: [{ content: "tests", status: "pending" }] },
+		]);
+		await session.waitForIdle();
+
+		const state = session.getGoalModeState();
+		expect(state?.enabled).toBe(true);
+		expect(state?.goal.status).toBe("active");
+		expect(state?.goal.objective).toBe("Complete todo list: Build, Verify");
+	});
+
+	it("does not clobber an existing goal when a todo list is initialised", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("done");
+
+		emitTodoInit();
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.objective).toBe("Ship the release");
+	});
+
+	it("auto-completes the todo-linked goal when every task completes", async () => {
+		mockTextStop("done");
+		emitTodoInit();
+		await session.waitForIdle();
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
+
+		// 生产链路里 todo 工具成功后调用的正是这个入口(tools/todo.ts)。
+		session.setTodoPhases([
+			{ name: "Build", tasks: [{ content: "scaffold", status: "completed" }] },
+			{ name: "Verify", tasks: [{ content: "tests", status: "completed" }] },
+		]);
+		await session.waitForIdle();
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.status).toBe("complete");
+	});
+
+	it("leaves a user goal untouched when the todo list completes", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("done");
+
+		session.setTodoPhases([{ name: "Build", tasks: [{ content: "scaffold", status: "completed" }] }]);
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.status).toBe("active");
+		expect(state?.goal.objective).toBe("Ship the release");
 	});
 });
