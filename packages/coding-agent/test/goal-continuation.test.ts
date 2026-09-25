@@ -33,6 +33,7 @@ function makeHarness(
 		hasPendingAsyncWake?: () => boolean;
 		buildContinuationPrompt?: (currentState: GoalModeState | undefined) => string | undefined;
 		continuationBlocked?: () => boolean;
+		pauseRequested?: () => boolean;
 	},
 ) {
 	const submissions: PromptSubmission[] = [];
@@ -48,6 +49,7 @@ function makeHarness(
 			}),
 		hasPendingAsyncWake: options?.hasPendingAsyncWake ?? (() => false),
 		continuationBlocked: options?.continuationBlocked ?? (() => false),
+		pauseRequested: options?.pauseRequested ?? (() => false),
 		pauseGoal: () => Promise.resolve(currentState),
 		buildContinuationPrompt: () =>
 			options?.buildContinuationPrompt
@@ -105,39 +107,100 @@ describe("GoalContinuation", () => {
 		expect(h.submissions).toHaveLength(0);
 	});
 
-	it("suppresses after a continuation turn with zero activity", async () => {
+	it("re-arms through no-progress continuation turns up to the budget, then suppresses", async () => {
 		const h = makeHarness(makeState());
-		await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
-			compactionOwned: false,
-		});
-		// Settle of the continuation turn we just submitted: zero activity → suppress.
+		// Settle of the continuation turn: zero tool activity → nudge (re-arm).
 		const second = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
 			compactionOwned: false,
 		});
-		expect(second).toBe(false);
-		expect(h.submissions).toHaveLength(1);
+		expect(second).toBe(true);
+		const third = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		expect(third).toBe(true);
+		// 预算(2)用尽:模型连续确认后仍无动作,停止续跑防烧 token。
+		const fourth = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		expect(fourth).toBe(true);
+		const fifth = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		expect(fifth).toBe(false);
+		await Bun.sleep(5);
+		expect(h.submissions).toHaveLength(3);
 	});
 
-	it("suppresses when a continuation turn repeats the same activity fingerprint", async () => {
+	it("re-arms through repeated activity fingerprints up to the budget, then suppresses", async () => {
 		const h = makeHarness(makeState());
+		const same = [assistantMessage([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])] as never;
 		await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
 			compactionOwned: false,
 		});
-		// First continuation turn settled with tool activity → continue.
-		const second = await h.driver.maybeContinue(
-			{ role: "assistant", content: [] } as never,
-			[assistantMessage([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])] as never,
-			{ compactionOwned: false },
-		);
-		expect(second).toBe(true);
-		// Second continuation turn settled with IDENTICAL activity → suppress.
-		const third = await h.driver.maybeContinue(
-			{ role: "assistant", content: [] } as never,
-			[assistantMessage([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])] as never,
-			{ compactionOwned: false },
-		);
-		expect(third).toBe(false);
-		expect(h.submissions).toHaveLength(2);
+		// 指纹首次出现只播种;之后两个相同指纹的续跑轮在预算内重发 nudge。
+		expect(
+			await h.driver.maybeContinue({ role: "assistant", content: [] } as never, same, { compactionOwned: false }),
+		).toBe(true);
+		expect(
+			await h.driver.maybeContinue({ role: "assistant", content: [] } as never, same, { compactionOwned: false }),
+		).toBe(true);
+		expect(
+			await h.driver.maybeContinue({ role: "assistant", content: [] } as never, same, { compactionOwned: false }),
+		).toBe(true);
+		// 第四个相同指纹:预算耗尽 → 抑制。
+		expect(
+			await h.driver.maybeContinue({ role: "assistant", content: [] } as never, same, { compactionOwned: false }),
+		).toBe(false);
+		await Bun.sleep(5);
+		expect(h.submissions).toHaveLength(4);
+	});
+
+	it("new tool activity resets the no-progress budget", async () => {
+		const h = makeHarness(makeState());
+		const activity = [assistantMessage([{ type: "toolCall", name: "read", arguments: { path: "a.ts" } }])] as never;
+		await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		// 两轮无进展烧掉预算……
+		await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		// ……真实工具活动重置预算。
+		expect(
+			await h.driver.maybeContinue({ role: "assistant", content: [] } as never, activity, {
+				compactionOwned: false,
+			}),
+		).toBe(true);
+		await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		// 预算重新计数:这轮无进展仍放行,而不是立即抑制。
+		expect(
+			await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+				compactionOwned: false,
+			}),
+		).toBe(true);
+		await Bun.sleep(5);
+		expect(h.submissions).toHaveLength(6);
+	});
+
+	it("skips re-arm while a pause request is pending, even though state still reads active", async () => {
+		let pauseRequested = false;
+		const h = makeHarness(makeState(), { pauseRequested: () => pauseRequested });
+		const scheduled = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		expect(scheduled).toBe(true);
+		// ESC 竞态:pause 已同步请求,但 paused 状态还在 accounting 队列里没提交。
+		pauseRequested = true;
+		const raced = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
+			compactionOwned: false,
+		});
+		expect(raced).toBe(false);
+		expect(h.submissions).toHaveLength(1);
 	});
 
 	it("continues again when the continuation turn produces different activity", async () => {
@@ -327,12 +390,26 @@ describe("GoalContinuation", () => {
 		);
 		expect(duringCompaction).toBe(false);
 		// ...so the next normal settle still compares against the pre-compaction
-		// fingerprint and suppresses the repeat.
+		// fingerprint: the repeat re-arms within budget instead of seeding fresh.
 		const after = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, activity() as never, {
 			compactionOwned: false,
 		});
-		expect(after).toBe(false);
-		expect(h.submissions).toHaveLength(2);
+		expect(after).toBe(true);
+		const afterSecond = await h.driver.maybeContinue(
+			{ role: "assistant", content: [] } as never,
+			activity() as never,
+			{ compactionOwned: false },
+		);
+		expect(afterSecond).toBe(true);
+		const afterThird = await h.driver.maybeContinue(
+			{ role: "assistant", content: [] } as never,
+			activity() as never,
+			{ compactionOwned: false },
+		);
+		expect(afterThird).toBe(false);
+		// Bun.sleep(0) 的 nudge 提交是真实宏任务,fake timers 无法驱动;5ms flush 等它落账。
+		await Bun.sleep(5);
+		expect(h.submissions).toHaveLength(4);
 	});
 
 	it("skips when a host mode blocks continuation (plan review / loop mode)", async () => {

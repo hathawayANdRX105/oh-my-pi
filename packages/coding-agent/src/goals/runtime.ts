@@ -121,10 +121,21 @@ export class GoalRuntime {
 	#wallClock: GoalWallClockSnapshot;
 	#budgetReportedFor: string | undefined;
 	#accountingTail: Promise<void> = Promise.resolve();
+	/**
+	 * 同步暂停请求标志:pauseGoal/onTaskAborted 的状态提交经 accounting 队列
+	 * 异步落地,settle 侧同步读状态会撞竞态窗口(ESC 后 continuation 又 re-arm)。
+	 * 置位于请求时刻,清除于 resume/createGoal。
+	 */
+	#pauseRequested = false;
 
 	constructor(host: GoalRuntimeHost) {
 		this.#host = host;
 		this.#wallClock = { lastAccountedAt: this.#now() };
+	}
+
+	/** True 从 pause 请求时刻起,到 resume/createGoal 为止;settle 侧用它封竞态窗口。 */
+	get pauseRequested(): boolean {
+		return this.#pauseRequested;
 	}
 
 	get snapshot(): GoalRuntimeSnapshot {
@@ -237,6 +248,7 @@ export class GoalRuntime {
 		const state = this.#host.getState();
 		const needsAccounting = state?.enabled && isAccountingStatus(state.goal);
 		const needsPause = options?.reason === "interrupted" && state?.enabled && state.goal.status === "active";
+		if (needsPause) this.#pauseRequested = true;
 		if (!needsAccounting && !needsPause) {
 			this.#turnSnapshot = undefined;
 			return;
@@ -385,6 +397,7 @@ export class GoalRuntime {
 	}
 
 	async createGoal(input: { objective: string; tokenBudget?: number }): Promise<GoalModeState> {
+		this.#pauseRequested = false;
 		const objective = input.objective.trim();
 		if (!objective) throw new Error("objective is required when op=create");
 		validateTokenBudget(input.tokenBudget);
@@ -420,6 +433,7 @@ export class GoalRuntime {
 	}
 
 	async resumeGoal(): Promise<GoalModeState> {
+		this.#pauseRequested = false;
 		return await this.#withAccounting(async () => {
 			const state = this.#getStateClone();
 			if (!state?.goal) throw new Error("No paused goal.");
@@ -437,6 +451,7 @@ export class GoalRuntime {
 	}
 
 	async pauseGoal(): Promise<GoalModeState | undefined> {
+		this.#pauseRequested = true;
 		return await this.#withAccounting(async () => {
 			await this.#flushUsageLocked("suppressed");
 			const state = this.#getStateClone();

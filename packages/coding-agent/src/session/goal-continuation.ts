@@ -3,6 +3,9 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { logger, stableStringifyJson } from "@oh-my-pi/pi-utils";
 import type { GoalModeState } from "../goals/state";
 
+/** 无进展续跑的放行上限:模型确认轮(纯文本)重发 nudge 的最大次数。 */
+const MAX_NO_PROGRESS_CONTINUATIONS = 2;
+
 /**
  * Session-layer goal continuation driver.
  *
@@ -26,6 +29,8 @@ export class GoalContinuation {
 	#previousActivity: string | undefined;
 	/** Consecutive error settles on an active goal; 2 triggers auto-pause (provider broken). */
 	#consecutiveErrorSettles = 0;
+	/** Consecutive continuation turns that produced no new tool activity; bounded by MAX_NO_PROGRESS_CONTINUATIONS. */
+	#noProgressContinuations = 0;
 
 	constructor(
 		private readonly host: {
@@ -45,6 +50,8 @@ export class GoalContinuation {
 			buildContinuationPrompt: () => string | undefined;
 			/** Suppression is scoped to one prompt cycle: a new prompt() resets it. */
 			getPromptGeneration: () => number;
+			/** 同步的暂停请求标志:ESC/abort 已请求 pause 但状态还在异步提交队列里时,本 settle 不得 re-arm。 */
+			pauseRequested?: () => boolean;
 		},
 	) {}
 
@@ -52,6 +59,7 @@ export class GoalContinuation {
 	resetSuppression(): void {
 		this.#awaitingContinuationSettle = false;
 		this.#previousActivity = undefined;
+		this.#noProgressContinuations = 0;
 	}
 
 	/**
@@ -67,6 +75,12 @@ export class GoalContinuation {
 		const generationAtEntry = this.host.getPromptGeneration();
 		const state = this.host.getGoalModeState();
 		if (!state?.enabled || state.goal.status !== "active" || state.mode === "exiting") {
+			this.#awaitingContinuationSettle = false;
+			return false;
+		}
+		// pause 的状态提交走 accounting 队列是异步的;用户 ESC/abort 后本 settle
+		// 可能仍读到 active。同步标志封闭这个竞态窗口:中断后不再 re-arm。
+		if (this.host.pauseRequested?.()) {
 			this.#awaitingContinuationSettle = false;
 			return false;
 		}
@@ -97,13 +111,45 @@ export class GoalContinuation {
 		if (this.#awaitingContinuationSettle) {
 			const activity = this.#activityFingerprint(activeMessages);
 			if (activity === "" || activity === this.#previousActivity) {
-				this.#previousActivity = activity;
-				this.#awaitingContinuationSettle = false;
-				logger.debug("Goal continuation suppressed: no new activity", {
-					repeat: activity !== "",
+				// 无新工具活动 ≠ 链条必须死:模型常有习惯性确认轮("I have processed
+				// the tool results."),重发同一 continuation prompt 当 nudge 就能
+				// 踢回去干活。连续超限才静默停,防真死循环烧 token。
+				this.#noProgressContinuations++;
+				if (this.#noProgressContinuations > MAX_NO_PROGRESS_CONTINUATIONS) {
+					this.#previousActivity = activity;
+					this.#awaitingContinuationSettle = false;
+					logger.debug("Goal continuation suppressed: no-progress budget exhausted", {
+						consecutive: this.#noProgressContinuations,
+					});
+					return false;
+				}
+				// ponytail: settle 期同步提交 followUp 链到第三个时撞 agent 队列
+				// 排水竞态(turn 永不启动);宏任务延后一拍,落到已 unwind 的空闲
+				// 会话走常规入口。根修在 pi-agent-core 排队机制,升级路径留那里。
+				this.#awaitingContinuationSettle = true;
+				const prompt = this.host.buildContinuationPrompt();
+				if (!prompt) {
+					this.#awaitingContinuationSettle = false;
+					return false;
+				}
+				void Bun.sleep(0).then(async () => {
+					if (this.host.getPromptGeneration() !== generationAtEntry) return;
+					if (this.host.pauseRequested?.()) return;
+					try {
+						await this.host.promptCustomMessage({
+							customType: "goal-continuation",
+							content: prompt,
+							display: false,
+							attribution: "agent",
+						});
+					} catch (error) {
+						this.#awaitingContinuationSettle = false;
+						logger.debug("Goal continuation deferred submission skipped", { error });
+					}
 				});
-				return false;
+				return true;
 			}
+			this.#noProgressContinuations = 0;
 			this.#previousActivity = activity;
 		}
 		const prompt = this.host.buildContinuationPrompt();
