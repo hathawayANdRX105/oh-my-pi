@@ -290,6 +290,54 @@ describe("session-layer goal continuation", () => {
 		expect(session.isStreaming).toBe(false);
 	});
 
+	it("aborts a non-goal long streaming turn before any follow-up provider call (AC-1)", async () => {
+		session.settings.set("todo.enabled", false);
+
+		let providerCall = 0;
+		const firstRelease = Promise.withResolvers<void>();
+		const streamBegan = Promise.withResolvers<void>();
+		session.agent.streamFn = () => {
+			const n = providerCall++;
+			if (n === 0) streamBegan.resolve();
+			const message = {
+				role: "assistant" as const,
+				content: [{ type: "text" as const, text: `stream ${n}` }],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "length" as const,
+				timestamp: Date.now(),
+			};
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				if (n === 0) firstRelease.promise.then(() => stream.push({ type: "done", reason: "length", message }));
+				else stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		const running = session.prompt("start the work");
+		await streamBegan.promise;
+		const aborting = session.abort();
+		await aborting;
+		await session.waitForIdle();
+
+		// AC-1: 非 goal 长流转下 ESC 一次确实停下:provider 只被叫过一次,stream 停住。
+		expect(providerCall).toBe(1);
+		expect(session.isStreaming).toBe(false);
+		firstRelease.resolve();
+		await running.catch(() => {});
+	});
+
 	it("auto-resumes a paused goal when the user submits a new prompt", async () => {
 		await session.goalRuntime.createGoal({ objective: "Ship the release" });
 		await session.goalRuntime.pauseGoal();
