@@ -1092,7 +1092,10 @@ async function createTrackedHeadlessPage(browser: Browser, reportTarget: (target
 		.createCDPSession()
 		.catch(() => null);
 	if (browserSession) {
-		send = browserSession.send.bind(browserSession);
+		send = browserSession.send.bind(browserSession) as unknown as (
+			method: string,
+			params?: object,
+		) => Promise<unknown>;
 		detach = browserSession.detach.bind(browserSession);
 	} else {
 		const connection = (
@@ -1478,12 +1481,14 @@ export class WorkerCore {
 
 	/** Current targets; on obscura, force its lazy enumeration before puppeteer can see pages. */
 	async #listTargets(): Promise<Target[]> {
-		const targets = this.#browser.targets();
+		const browser = this.#browser;
+		if (!browser) throw new ToolError("Browser is not connected");
+		const targets = browser.targets();
 		if (targets.some(target => String(target.type()) === "page")) return targets;
 		// ponytail: 同 createTrackedHeadlessPage——obscura 的 discovery 不重发已有 page，
 		// createTarget 触发一次枚举后 puppeteer 才看得到。Chrome 上有 page 时直接返回。
 		const connection = (
-			this.#browser as unknown as {
+			browser as unknown as {
 				_connection?: { send(method: string, params?: object): Promise<unknown> };
 			}
 		)._connection;
@@ -1492,7 +1497,7 @@ export class WorkerCore {
 		const { promise: enumerated, resolve } = Promise.withResolvers<void>();
 		setTimeout(resolve, 500);
 		await enumerated;
-		return this.#browser.targets();
+		return browser.targets();
 	}
 
 	/**
