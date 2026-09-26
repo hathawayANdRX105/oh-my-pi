@@ -158,58 +158,35 @@ describe("session-layer goal continuation", () => {
 		expect(promptSpy).not.toHaveBeenCalled();
 	});
 
-	it("continues after an error-settled turn when a goal is active (no silent chain break)", async () => {
+	it("does not submit a goal-continuation on an error settle; auto-pauses after two consecutive error settles", async () => {
 		session.settings.set("retry.enabled", false);
 		await session.goalRuntime.createGoal({ objective: "Ship the release" });
 
 		let providerCall = 0;
 		session.agent.streamFn = () => {
-			const n = providerCall++;
-			const message =
-				n === 0
-					? {
-							role: "assistant" as const,
-							content: [],
-							api: "anthropic-messages" as const,
-							provider: "anthropic" as const,
-							model: "claude-sonnet-4-5",
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "error" as const,
-							errorMessage: "stream closed before a finish_reason",
-							timestamp: Date.now(),
-						}
-					: {
-							role: "assistant" as const,
-							content: [{ type: "text" as const, text: `recovered turn ${n}` }],
-							api: "anthropic-messages" as const,
-							provider: "anthropic" as const,
-							model: "claude-sonnet-4-5",
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "stop" as const,
-							timestamp: Date.now(),
-						};
+			providerCall++;
+			const message = {
+				role: "assistant" as const,
+				content: [],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error" as const,
+				errorMessage: "502 JSON error injected into SSE stream",
+				timestamp: Date.now(),
+			};
 			const stream = new AssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({ type: "start", partial: message });
-				if (message.stopReason === "error") {
-					stream.push({ type: "error", reason: "error", error: message });
-				} else {
-					stream.push({ type: "done", reason: message.stopReason, message });
-				}
+				stream.push({ type: "error", reason: "error", error: message });
 			});
 			return stream;
 		};
@@ -218,10 +195,18 @@ describe("session-layer goal continuation", () => {
 		await session.prompt("start the work");
 		await session.waitForIdle();
 
-		expect(promptSpy).toHaveBeenCalled();
-		expect(promptSpy.mock.calls[0]?.[0]?.content).toContain("Ship the release");
-		// The continuation turn actually ran against the provider.
-		expect(providerCall).toBeGreaterThanOrEqual(2);
+		// 一次 error settle:不提交续跑(失败请求之后的自动重试只会制造第二个
+		// error settle,让刚 resume 的 goal 立刻再被暂停),goal 保持 active。
+		expect(promptSpy).not.toHaveBeenCalled();
+		expect(providerCall).toBe(1);
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
+
+		// 用户重发 prompt(故障期间再次 error settle)= 第二个连续失败 → 自动暂停。
+		await session.prompt("retry");
+		await session.waitForIdle();
+		expect(promptSpy).not.toHaveBeenCalled();
+		expect(providerCall).toBe(2);
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
 	});
 
 	it("todo reminder resumes work after an error-settled turn when todo.resumeAfterError is on", async () => {

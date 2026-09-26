@@ -1391,6 +1391,10 @@ export class AgentSession {
 			getEnabledToolNames: () => this.getEnabledToolNames(),
 			toolRegistry: () => this.#tools.registry,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
+			goalContinuationActive: () => {
+				const state = this.#goalModeState;
+				return state?.enabled === true && state.goal.status === "active";
+			},
 			prewalkWillHandoff: () => this.#prewalk.willHandoff,
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
 			onAllTodosCompleted: () => this.#completeTodoLinkedGoal(),

@@ -19,6 +19,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 function makeTracker(
 	settings: Settings,
 	sessionManager: SessionManager,
+	options?: { goalContinuationActive?: () => boolean },
 ): { tracker: TodoTracker; reminders: number[] } {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("Expected built-in anthropic model to exist");
@@ -42,6 +43,7 @@ function makeTracker(
 		getEnabledToolNames: () => ["todo"],
 		toolRegistry: () => new Map(),
 		planModeEnabled: () => false,
+		goalContinuationActive: options?.goalContinuationActive ?? (() => false),
 		prewalkWillHandoff: () => false,
 		consumeLastServedToolChoiceLabel: () => undefined,
 	};
@@ -58,6 +60,29 @@ function stopMessage(text = "paused"): AssistantMessage {
 		provider: model.provider,
 		model: model.id,
 		stopReason: "stop",
+		usage: {
+			input: 100,
+			output: 20,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 120,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		timestamp: Date.now(),
+	};
+}
+
+function errorMessage(): AssistantMessage {
+	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+	if (!model) throw new Error("Expected built-in anthropic model to exist");
+	return {
+		role: "assistant",
+		content: [],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		stopReason: "error",
+		errorMessage: "502 JSON error injected into SSE stream",
 		usage: {
 			input: 100,
 			output: 20,
@@ -128,5 +153,34 @@ describe("TodoTracker reminder budget", () => {
 		tracker.onToolResult("todo", false, { op: "done", phases: tracker.phases });
 		expect(await tracker.checkCompletion(stopMessage())).toBe(true);
 		expect(reminders).toEqual([1, 1, 1]);
+	});
+
+	it("skips the error-settle reminder while an active goal owns the continuation", async () => {
+		const settings = Settings.isolated({
+			"todo.enabled": true,
+			"todo.reminders": true,
+		});
+		const sessionManager = SessionManager.inMemory(tempDir.path());
+		let goalActive = false;
+		const { tracker, reminders } = makeTracker(settings, sessionManager, {
+			goalContinuationActive: () => goalActive,
+		});
+		tracker.setPhases([{ name: "Work", tasks: [{ content: "task A", status: "pending" }] }]);
+
+		// No active goal: an error-settled stop still takes the reminder (todo.resumeAfterError path).
+		expect(await tracker.checkCompletion(errorMessage())).toBe(true);
+		expect(reminders).toEqual([1]);
+
+		// Goal active: the next error settle must not stack a second failing turn on top
+		// of the goal-continuation semantics (502 amplification on a broken provider).
+		tracker.resetCycle();
+		goalActive = true;
+		expect(await tracker.checkCompletion(errorMessage())).toBe(false);
+		expect(reminders).toEqual([1]);
+
+		// Non-error stops are not gated by the goal hook: the reminder still fires.
+		tracker.resetCycle();
+		expect(await tracker.checkCompletion(stopMessage())).toBe(true);
+		expect(reminders).toEqual([1, 1]);
 	});
 });

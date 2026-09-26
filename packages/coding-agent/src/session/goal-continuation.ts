@@ -87,6 +87,10 @@ export class GoalContinuation {
 		// 连续 error settle = provider 连接有问题(如聚合站 4xx/连接失败),
 		// 继续续跑只会空转(每圈一次失败请求,UI 一直"运行"但无产出)。
 		// 两连败即暂停 goal(与 ESC 语义一致);恢复用 /goal resume 或新消息。
+		// error settle 本身不提交续跑:失败请求之后的自动重试只会制造第二个
+		// error settle,让刚被新消息 resume 的 goal 在同一 prompt 周期内立刻
+		// 再被暂停(resume→pause 抖动)。goal 保持 active,等下一次成功 settle
+		// 或用户的新 prompt(经 agent_start 自动 resume)再驱动。
 		if (message.stopReason === "error") {
 			this.#consecutiveErrorSettles++;
 			if (this.#consecutiveErrorSettles >= 2) {
@@ -100,6 +104,8 @@ export class GoalContinuation {
 				void this.host.pauseGoal();
 				return false;
 			}
+			// 未达暂停阈值也不提交:让 error settle 本身停止驱动(见上方注释)。
+			return false;
 		} else {
 			this.#consecutiveErrorSettles = 0;
 		}

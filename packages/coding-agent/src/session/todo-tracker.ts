@@ -58,6 +58,8 @@ export interface TodoTrackerHost {
 	getEnabledToolNames(): string[];
 	toolRegistry(): Map<string, AgentTool>;
 	planModeEnabled(): boolean;
+	/** Active goal owns continuation; error-settle reminders must not stack a second failing turn on top of it. */
+	goalContinuationActive?(): boolean;
 	/** Whether prewalk will hand off after its plan nudge owns todo creation. */
 	prewalkWillHandoff(): boolean;
 	consumeLastServedToolChoiceLabel(): string | undefined;
@@ -269,6 +271,14 @@ export class TodoTracker {
 		}
 		if (isAwaitingUserAnswer(message)) {
 			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
+				incomplete: incomplete.length,
+			});
+			return false;
+		}
+		if (message.stopReason === "error" && this.#host.goalContinuationActive?.() === true) {
+			// goal-continuation 拥有 error settle 之后的续跑语义:注入 todo reminder
+			// 只会给坏掉的 provider 再叠一个失败请求(502 放大),不注入。
+			logger.debug("Todo completion: active goal owns the continuation after an error settle; skipping reminder", {
 				incomplete: incomplete.length,
 			});
 			return false;
