@@ -35,6 +35,7 @@ async function createHarness(): Promise<Harness> {
 		agent: { state: { tools: [] }, metadataForProvider: () => undefined },
 		customCommands: [],
 		skills: [],
+		setGoalContinuationBlocker: () => undefined,
 		autoCompactionEnabled: true,
 		messages: [],
 		systemPrompt: [],
