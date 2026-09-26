@@ -196,7 +196,7 @@ describe("session-layer goal continuation", () => {
 		const waitForNextPause = (): Promise<void> => {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			const off = session.subscribe(event => {
-				if (event.type === "goal_updated" && event.goal.status === "paused") {
+				if (event.type === "goal_updated" && event.goal?.status === "paused") {
 					off();
 					resolve();
 				}
@@ -463,6 +463,68 @@ describe("session-layer goal continuation", () => {
 		expect(state?.enabled).toBe(true);
 		expect(state?.goal.status).toBe("active");
 		expect(state?.goal.objective).toBe("Complete todo list: Build, Verify");
+	});
+
+	it("auto-completes the linked goal when a todo tool result completes every task", async () => {
+		// 用户报障:模型驱动的 `todo done` 只写 session 条目,内存 tracker 不更新,
+		// onAllTodosCompleted 不触发 → 联动 goal 不自动 complete → 运行时不退出。
+		emitTodoInit();
+		await session.waitForIdle();
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
+
+		const toolCallId = "call_todo_done";
+		const usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: toolCallId, name: "todo", arguments: { op: "done" } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage,
+				timestamp: Date.now(),
+			},
+		});
+		// 事件驱动等待 goal 变 complete(先挂订阅再触发完成,避免漏事件)。
+		const completeGate = (async () => {
+			if (session.getGoalModeState()?.goal.status === "complete") return;
+			await new Promise<void>(resolve => {
+				const off = session.subscribe(event => {
+					if (event.type === "goal_updated" && event.goal?.status === "complete") {
+						off();
+						resolve();
+					}
+				});
+			});
+		})();
+		// 模型完成最后一个任务:todo 工具结果携带 post-op phases(全 completed)。
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "todo",
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				details: {
+					op: "done",
+					phases: [{ name: "Build", tasks: [{ content: "scaffold", status: "completed" }] }],
+				},
+				timestamp: Date.now(),
+			},
+		});
+		// 联动 goal 随全完成自动 complete(经 accounting 队列异步落地);运行时链条终止。
+		await completeGate;
+		expect(session.getGoalModeState()?.goal.status).toBe("complete");
 	});
 
 	it("does not clobber an existing goal when a todo list is initialised", async () => {

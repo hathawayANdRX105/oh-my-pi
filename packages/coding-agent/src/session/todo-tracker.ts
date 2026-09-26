@@ -72,7 +72,6 @@ export class TodoTracker {
 	readonly #host: TodoTrackerHost;
 	#phases: TodoPhase[] = [];
 	#reminderCount = 0;
-	#reminderAwaitingProgress = false;
 	#mutationsSinceLastTouch = 0;
 	#midRunNudgeCount = 0;
 
@@ -101,10 +100,23 @@ export class TodoTracker {
 	/** Rehydrates todo phases from the current transcript branch. */
 	syncFromBranch(): void {
 		// Every call site is a branch transition (resume/rewind/fork/switch/tree):
-		// the previous cycle's reminder and stall flags no longer apply, so a
-		// stale "awaiting progress" flag cannot suppress the next stop-time pass.
+		// the previous cycle's reminder and mutation budgets no longer apply.
 		this.resetCycle();
 		this.setPhases(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()));
+	}
+
+	/**
+	 * Applies the post-op phases carried by a successful `todo` tool result so the
+	 * in-memory list stays live during a run (the branch sync only happens at
+	 * transitions). Funnelled through setPhases, so a fully-completed result fires
+	 * onAllTodosCompleted — the auto-exit point for the linked goal.
+	 * @returns true when the tracker was updated.
+	 */
+	applyToolResultPhases(details: Record<string, unknown>): boolean {
+		const phases = details.phases;
+		if (!Array.isArray(phases) || !phases.every(isTodoPhase)) return false;
+		this.setPhases(phases);
+		return true;
 	}
 
 	/** Returns a defensive clone suitable for snapshots and branch state. */
@@ -115,7 +127,6 @@ export class TodoTracker {
 	/** Resets per-prompt reminder and mutation budgets. */
 	resetCycle(): void {
 		this.#reminderCount = 0;
-		this.#reminderAwaitingProgress = false;
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount = 0;
 	}
@@ -136,7 +147,6 @@ export class TodoTracker {
 			// deliberately do not refresh it.
 			this.#reminderCount = 0;
 		}
-		this.#reminderAwaitingProgress = false;
 	}
 
 	/** Detects whether a successful todo result came from an init operation. */
@@ -230,15 +240,8 @@ export class TodoTracker {
 	async checkCompletion(message: AssistantMessage): Promise<boolean> {
 		if (this.#host.consumeLastServedToolChoiceLabel() === "user-force") return false;
 		if (this.#host.planModeEnabled()) return false;
-		if (this.#reminderAwaitingProgress) {
-			logger.debug("Todo completion: prior reminder still awaiting agent action; staying silent", {
-				attempt: this.#reminderCount,
-			});
-			return false;
-		}
 		if (!this.#host.settings.get("todo.reminders") || !this.#host.settings.get("todo.enabled")) {
 			this.#reminderCount = 0;
-			this.#reminderAwaitingProgress = false;
 			return false;
 		}
 		const remindersMax = this.#host.settings.get("todo.remindersMax");
@@ -249,7 +252,6 @@ export class TodoTracker {
 		const phases = this.phases;
 		if (phases.length === 0) {
 			this.#reminderCount = 0;
-			this.#reminderAwaitingProgress = false;
 			return false;
 		}
 		const incompleteByPhase = phases
@@ -266,7 +268,6 @@ export class TodoTracker {
 		const incomplete = incompleteByPhase.flatMap(phase => phase.tasks);
 		if (incomplete.length === 0) {
 			this.#reminderCount = 0;
-			this.#reminderAwaitingProgress = false;
 			return false;
 		}
 		if (isAwaitingUserAnswer(message)) {
@@ -297,6 +298,8 @@ export class TodoTracker {
 			`<system-reminder>\n` +
 			`You stopped with ${incomplete.length} incomplete todo item(s):\n${todoList}\n\n` +
 			`Please continue working on these tasks or mark them complete if finished.\n` +
+			`If a task is truly unfinishable now, mark it blocked via the \`todo\` tool (op \`block\`, with reason) — ` +
+			`blocked tasks are the only legal stop signal; never stop with an acknowledgment-only reply.\n` +
 			`(Reminder ${this.#reminderCount}/${remindersMax})\n` +
 			`</system-reminder>`;
 		logger.debug("Todo completion: sending reminder", {
@@ -316,7 +319,6 @@ export class TodoTracker {
 			timestamp: Date.now(),
 		};
 		this.#mutationsSinceLastTouch = 0;
-		this.#reminderAwaitingProgress = true;
 		this.#host.agent.appendMessage(reminderMessage);
 		this.#host.sessionManager.appendMessage(reminderMessage);
 		this.#host.scheduleAgentContinue({

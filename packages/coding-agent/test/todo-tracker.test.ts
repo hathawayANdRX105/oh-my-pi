@@ -106,7 +106,7 @@ describe("TodoTracker reminder budget", () => {
 		tempDir = TempDir.createSync("@pi-todo-tracker-");
 	});
 
-	it("a branch transition clears a stalled reminder flag so the next stop fires", async () => {
+	it("a branch transition resets the reminder cap counter so a rehydrated cycle can fire", async () => {
 		const settings = Settings.isolated({
 			"todo.enabled": true,
 			"todo.reminders": true,
@@ -116,18 +116,20 @@ describe("TodoTracker reminder budget", () => {
 		const { tracker, reminders } = makeTracker(settings, sessionManager);
 
 		tracker.setPhases([{ name: "Work", tasks: [{ content: "task A", status: "pending" }] }]);
-		// First stop: reminder 1 fires, tracker is now awaiting agent progress.
-		expect(await tracker.checkCompletion(stopMessage())).toBe(true);
-		expect(reminders).toEqual([1]);
+		// Burn the cap: after 3 reminders the next stop is held.
+		for (let i = 0; i < 3; i++) {
+			expect(await tracker.checkCompletion(stopMessage())).toBe(true);
+		}
+		expect(await tracker.checkCompletion(stopMessage())).toBe(false);
+		expect(reminders).toEqual([1, 2, 3]);
 
-		// Simulate a rewind/fork to a branch that also carries incomplete todos:
-		// rehydration must reset the cycle, otherwise the stale awaiting-progress
-		// flag silently swallows the reminder on the rehydrated branch.
+		// Rewind/fork to a branch that also carries an incomplete todo:
+		// rehydration resets the cycle, so the rehydrated branch can fire again.
 		appendTodoPhases(sessionManager, [{ name: "Work", tasks: [{ content: "task B", status: "pending" }] }]);
 		tracker.syncFromBranch();
 
 		expect(await tracker.checkCompletion(stopMessage())).toBe(true);
-		expect(reminders).toEqual([1, 1]);
+		expect(reminders).toEqual([1, 2, 3, 1]);
 	});
 
 	it("a view todo result does not refresh the reminder cap; a mutating op does", async () => {

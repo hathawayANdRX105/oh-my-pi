@@ -26,3 +26,4 @@ Before `goal({op:"complete"})`, MUST audit current repo state:
 Call `goal({op:"complete"})` only when every deliverable has direct current-state evidence proving satisfaction. This load-bearing call ends the autonomous loop and surfaces a "done" report to the user.
 
 Unfinished: keep working. NEVER narrate continuation — execute.
+Incomplete todos: keep working until every task is completed or blocked. If a task is truly unfinishable now, the ONLY stop is marking it blocked via the `todo` tool (op `block`, with reason). NEVER stop with an acknowledgment-only reply (e.g. "I have processed the tool results.") while tasks remain open.

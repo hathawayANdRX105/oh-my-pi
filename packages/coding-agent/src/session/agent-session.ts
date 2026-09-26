@@ -3426,16 +3426,21 @@ export class AgentSession {
 				const details = isRecord(event.message.details) ? event.message.details : undefined;
 				const semanticResult = semanticToolResult(toolName, event.message);
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
-				if (toolName === "todo" && !isError && details && this.#todo.onTodoResultDetails(details, toolCallId)) {
-					this.#scheduleReplanTitleRefresh();
-					this.#linkGoalToTodoList(details);
+				if (toolName === "todo" && !isError && details) {
+					// 所有成功的 todo op 结果都带 post-op phases:写回 tracker,
+					// 全完成结果经 setPhases 触发 onAllTodosCompleted → 联动 goal 自动 complete。
+					this.#todo.applyToolResultPhases(details);
+					if (this.#todo.onTodoResultDetails(details, toolCallId)) {
+						this.#scheduleReplanTitleRefresh();
+						this.#linkGoalToTodoList(details);
+					}
 				}
 				if (toolName === "todo" && isError) {
 					const errorText = content.find(part => part.type === "text")?.text;
 					const reminderText = [
 						"<system-reminder>",
 						"todo failed, so todo progress is not visible to the user.",
-						errorText ? `Failure: ${errorText}` : "Failure: todo returned an error.",
+						errorText ? `Failure: ${errorText}.` : "Failure: todo returned an error.",
 						"Fix the todo payload and call todo again before continuing.",
 						"</system-reminder>",
 					].join("\n");
