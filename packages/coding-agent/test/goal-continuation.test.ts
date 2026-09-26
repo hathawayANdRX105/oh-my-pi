@@ -436,7 +436,7 @@ describe("GoalContinuation", () => {
 		const errorSettle = { role: "assistant" as const, content: [], stopReason: "error" as const } as never;
 
 		// 用户驱动的连续失败:计数每次被重置,不触发自动暂停,也不提交续跑。
-		let userOrigin = true;
+		const userOrigin = true;
 		const h = makeHarness(makeState(), { lastRunUserOrigin: () => userOrigin });
 		expect(await h.driver.maybeContinue(errorSettle, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
 		expect(await h.driver.maybeContinue(errorSettle, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
