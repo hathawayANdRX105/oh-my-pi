@@ -44,6 +44,7 @@ async function createHarness(): Promise<Harness> {
 		get isStreaming() {
 			return streaming;
 		},
+		setGoalContinuationBlocker: () => undefined,
 	} as unknown as AgentSession;
 	const mode = new InteractiveMode(session, "test");
 	harness = {

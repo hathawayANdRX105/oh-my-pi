@@ -58,6 +58,8 @@ export class GoalContinuation {
 			getPromptGeneration: () => number;
 			/** 同步的暂停请求标志:ESC/abort 已请求 pause 但状态还在异步提交队列里时,本 settle 不得 re-arm。 */
 			pauseRequested?: () => boolean;
+			/** task-complete guard 激活时正常停止续跑归 guard nudge 循环,本驱动只保留 error 重连。 */
+			taskCompleteGuardActive?: () => boolean;
 		},
 	) {}
 
@@ -145,6 +147,12 @@ export class GoalContinuation {
 		} else {
 			this.#sameErrorStreak = 0;
 			this.#errorFingerprint = undefined;
+		}
+		// task-complete guard 激活:裸文本停止的续跑归 guard 的标记 nudge 循环
+		// (简单重试 + cap),goal 驱动不再接管,避免两套停止语义叠加。
+		if (this.host.taskCompleteGuardActive?.()) {
+			this.#awaitingContinuationSettle = false;
+			return false;
 		}
 		// Only judge suppression when this settle ends a turn WE submitted;
 		// otherwise (fresh user prompt etc.) the chain restarts cleanly.

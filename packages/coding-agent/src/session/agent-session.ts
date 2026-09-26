@@ -174,6 +174,7 @@ import type { PlanModeState } from "../plan-mode/state";
 import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with { type: "text" };
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
+import taskCompleteNudgePrompt from "../prompts/system/task-complete-nudge.md" with { type: "text" };
 import checkpointActiveNoticeTemplate from "../prompts/system/checkpoint-active-notice.md" with { type: "text" };
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
@@ -398,6 +399,8 @@ export * from "./agent-session-types";
 export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
+/** 无 task_complete 标记的裸文本停止,nudge 续跑次数上限(per-prompt 复位)。 */
+const TASK_COMPLETE_MAX_CONTINUATIONS = 3;
 
 import { GoalContinuation } from "./goal-continuation";
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
@@ -673,6 +676,8 @@ export class AgentSession {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+	#taskCompleteMarked = false;
+	#taskCompleteContinuations = 0;
 	readonly #goalContinuation: GoalContinuation;
 	/** Host modes (plan review / loop) that temporarily forbid goal auto-continuation. */
 	#goalContinuationBlocker: () => boolean = () => false;
@@ -1419,6 +1424,9 @@ export class AgentSession {
 			buildContinuationPrompt: () => this.#goalRuntime.buildContinuationPrompt(),
 			getPromptGeneration: () => this.#promptGeneration,
 			pauseRequested: () => this.#goalRuntime.pauseRequested,
+			taskCompleteGuardActive: () =>
+				this.settings.get("taskComplete.enabled") === true &&
+				this.agent.state.tools.some(tool => tool.name === "task_complete"),
 		});
 		this.#modelMentions = new ModelMentionRegistry({
 			sessionManager: this.sessionManager,
@@ -3116,6 +3124,11 @@ export class AgentSession {
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const details = isRecord(event.message.details) ? event.message.details : undefined;
 			this.#todo.onToolResult(event.message.toolName, event.message.isError, details);
+			// task_complete 标记:成功结果即"模型判定任务完成/需要输入/受阻",
+			// settle 路径据此终止(裸停止不再触发 guard nudge)。
+			if (event.message.toolName === "task_complete" && !event.message.isError) {
+				this.#taskCompleteMarked = true;
+			}
 		}
 		// Track the settled assistant turn synchronously as well: agent_end
 		// maintenance reads `#lastAssistantMessage`, and when a turn's events all
@@ -3865,6 +3878,11 @@ export class AgentSession {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
+				const taskCompleteContinuationScheduled = this.#checkTaskCompleteGuard(msg);
+				if (taskCompleteContinuationScheduled) {
+					await emitAgentEndNotification({ willContinue: true });
+					return;
+				}
 				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
@@ -4092,6 +4110,44 @@ export class AgentSession {
 		);
 	}
 
+	/**
+	 * Task completion guard: while this session carries the task_complete marker,
+	 * a text-only stop without the marker is not terminal — nudge and continue
+	 * (capped). Model-judged stop is deliberately separate from provider-error
+	 * recovery, which stays on the goal-continuation / retry machinery.
+	 */
+	#checkTaskCompleteGuard(msg: AssistantMessage): boolean {
+		if (this.settings.get("taskComplete.enabled") !== true) return false;
+		if (msg.stopReason !== "stop") return false;
+		if (this.#taskCompleteMarked) {
+			// 模型主动标记(完成/需要输入/受阻):本轮终止。
+			this.#taskCompleteMarked = false;
+			this.#taskCompleteContinuations = 0;
+			return false;
+		}
+		// 只有真正持有标记工具(顶层默认;子代理有自己的完成流)的会话启用 guard。
+		if (!this.agent.state.tools.some(tool => tool.name === "task_complete")) return false;
+		if (this.#taskCompleteContinuations >= TASK_COMPLETE_MAX_CONTINUATIONS) return false;
+		this.#taskCompleteContinuations++;
+		const nudge: AgentMessage = {
+			role: "developer",
+			content: [
+				{
+					type: "text",
+					text: prompt.render(taskCompleteNudgePrompt, {
+						attempt: this.#taskCompleteContinuations,
+						max: TASK_COMPLETE_MAX_CONTINUATIONS,
+					}),
+				},
+			],
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		this.agent.appendMessage(nudge);
+		this.sessionManager.appendMessage(nudge);
+		this.#scheduleAgentContinue({ source: "task-complete-guard", generation: this.#promptGeneration });
+		return true;
+	}
 	#scheduleCompactionContinuation(options: {
 		generation: number;
 		autoContinue: boolean;
@@ -6894,6 +6950,9 @@ export class AgentSession {
 			this.#irc.flushPending();
 
 			this.#todo.resetCycle();
+			// 新用户 prompt = 新的 guard 窗口:标记与 nudge 计数随 todo cycle 一起复位。
+			this.#taskCompleteMarked = false;
+			this.#taskCompleteContinuations = 0;
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
 
@@ -8517,6 +8576,8 @@ export class AgentSession {
 			this.sessionManager.appendServiceTierChange(this.#models.serviceTierEntry());
 
 			this.#todo.resetCycle();
+			this.#taskCompleteMarked = false;
+			this.#taskCompleteContinuations = 0;
 			this.#planReferenceSent = false;
 			this.#planReferencePath = "local://PLAN.md";
 			this.#advisors.resetSessionState();

@@ -196,7 +196,7 @@ describe("session-layer goal continuation", () => {
 		const waitForNextPause = (): Promise<void> => {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			const off = session.subscribe(event => {
-				if (event.type === "goal_updated" && event.goal.status === "paused") {
+				if (event.type === "goal_updated" && event.goal?.status === "paused") {
 					off();
 					resolve();
 				}

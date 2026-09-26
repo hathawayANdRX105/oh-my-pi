@@ -4164,6 +4164,19 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	// Task completion guard
+	"taskComplete.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "tools",
+			group: "Available Tools",
+			label: "Task Complete Guard",
+			description:
+				"Stop runs on the model's explicit task_complete marker: a text-only stop without the marker nudges the run to continue (capped), provider-error continuation is unaffected",
+		},
+	},
+
 	"todo.eager": {
 		type: "enum",
 		values: ["default", "preferred", "always"] as const,
