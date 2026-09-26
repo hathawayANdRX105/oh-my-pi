@@ -43,6 +43,28 @@ interface PromptLine {
 	hadPromptLabel: boolean;
 }
 
+/**
+ * Merge a post-op `done` snapshot over the current phases: completed status is
+ * sticky per task, so a stale parallel view can never roll a completion back.
+ * `done` ops never remove tasks, so the current structure stays authoritative.
+ */
+function mergeDonePhases(current: TodoPhase[], incoming: TodoPhase[]): TodoPhase[] {
+	if (current.length === 0) return incoming;
+	return current.map(phase => {
+		const doneTasks =
+			incoming.find(candidate => candidate.name === phase.name)?.tasks.filter(task => task.status === "completed") ??
+			[];
+		return {
+			...phase,
+			tasks: phase.tasks.map(task =>
+				doneTasks.some(candidate => candidate.content === task.content)
+					? { ...task, status: "completed" as const }
+					: task,
+			),
+		};
+	});
+}
+
 /** Capabilities the todo tracker borrows from its owning session. */
 export interface TodoTrackerHost {
 	agent: Agent;
@@ -110,12 +132,19 @@ export class TodoTracker {
 	 * in-memory list stays live during a run (the branch sync only happens at
 	 * transitions). Funnelled through setPhases, so a fully-completed result fires
 	 * onAllTodosCompleted — the auto-exit point for the linked goal.
+	 * `done` results merge instead of replace: a batch of exclusive done calls runs
+	 * in parallel, so each result carries a stale view — a completed task must not
+	 * regress behind an earlier call's completion in persistence order.
 	 * @returns true when the tracker was updated.
 	 */
 	applyToolResultPhases(details: Record<string, unknown>): boolean {
 		const phases = details.phases;
 		if (!Array.isArray(phases) || !phases.every(isTodoPhase)) return false;
-		this.setPhases(phases);
+		if (stringProperty(details, "op") === "done") {
+			this.setPhases(mergeDonePhases(this.#phases, phases));
+		} else {
+			this.setPhases(phases);
+		}
 		return true;
 	}
 
