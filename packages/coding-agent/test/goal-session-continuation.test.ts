@@ -63,6 +63,45 @@ describe("session-layer goal continuation", () => {
 		resetSettingsForTest();
 	});
 
+	/** Drives the real event chain: todo init toolCall + successful toolResult. */
+	function emitTodoInit(
+		phases: Array<Record<string, unknown>> = [{ name: "Build", tasks: [{ content: "scaffold", status: "pending" }] }],
+	): void {
+		const toolCallId = "call_todo_link";
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: toolCallId, name: "todo", arguments: { op: "init" } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			},
+		});
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "todo",
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				details: { op: "init", phases },
+				timestamp: Date.now(),
+			},
+		});
+	}
+
 	function mockTextStop(text: string): void {
 		let providerCall = 0;
 		session.agent.streamFn = () => {
@@ -119,70 +158,110 @@ describe("session-layer goal continuation", () => {
 		expect(promptSpy).not.toHaveBeenCalled();
 	});
 
-	it("continues after an error-settled turn when a goal is active (no silent chain break)", async () => {
+	it("reconnects through provider outages and auto-pauses only after 11 consecutive same-code errors", async () => {
 		session.settings.set("retry.enabled", false);
 		await session.goalRuntime.createGoal({ objective: "Ship the release" });
 
 		let providerCall = 0;
 		session.agent.streamFn = () => {
-			const n = providerCall++;
-			const message =
-				n === 0
-					? {
-							role: "assistant" as const,
-							content: [],
-							api: "anthropic-messages" as const,
-							provider: "anthropic" as const,
-							model: "claude-sonnet-4-5",
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "error" as const,
-							errorMessage: "stream closed before a finish_reason",
-							timestamp: Date.now(),
-						}
-					: {
-							role: "assistant" as const,
-							content: [{ type: "text" as const, text: `recovered turn ${n}` }],
-							api: "anthropic-messages" as const,
-							provider: "anthropic" as const,
-							model: "claude-sonnet-4-5",
-							usage: {
-								input: 1,
-								output: 1,
-								cacheRead: 0,
-								cacheWrite: 0,
-								totalTokens: 2,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "stop" as const,
-							timestamp: Date.now(),
-						};
+			providerCall++;
+			const message = {
+				role: "assistant" as const,
+				content: [],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error" as const,
+				errorStatus: 502,
+				errorMessage: "502 JSON error injected into SSE stream",
+				timestamp: Date.now(),
+			};
 			const stream = new AssistantMessageEventStream();
 			queueMicrotask(() => {
 				stream.push({ type: "start", partial: message });
-				if (message.stopReason === "error") {
-					stream.push({ type: "error", reason: "error", error: message });
-				} else {
-					stream.push({ type: "done", reason: message.stopReason, message });
-				}
+				stream.push({ type: "error", reason: "error", error: message });
 			});
 			return stream;
 		};
 
-		const promptSpy = vi.spyOn(session, "promptCustomMessage");
+		/** 等待下一次 goal 自动暂停(goal_updated 事件,无定时器猜测)。 */
+		const waitForNextPause = (): Promise<void> => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			const off = session.subscribe(event => {
+				if (event.type === "goal_updated" && event.goal?.status === "paused") {
+					off();
+					resolve();
+				}
+			});
+			return promise;
+		};
+
+		// 故障期间会话不停摆:用户 prompt 失败后自动重连续跑,直到同一 502
+		const pausedFirst = waitForNextPause();
+		await session.prompt("start the work");
+		await pausedFirst;
+		// 暂停事件先于 agent unwind 完成:等 unwind 结束后再断言/继续,
+		// 避免下一个 prompt 撞上 AgentBusyError(与 TUI 800ms 延时同一竞态)。
+		await session.waitForIdle();
+		expect(providerCall).toBe(11);
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+
+		// 用户重发 prompt:agent_start 自动 resume,重连循环重新开始(计数清零),
+		const pausedSecond = waitForNextPause();
+		await session.prompt("retry");
+		await pausedSecond;
+		await session.waitForIdle();
+		expect(providerCall).toBe(22);
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+	});
+
+	it("stops reconnecting immediately on an auth failure (401)", async () => {
+		session.settings.set("retry.enabled", false);
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+
+		let providerCall = 0;
+		session.agent.streamFn = () => {
+			providerCall++;
+			const message = {
+				role: "assistant" as const,
+				content: [],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error" as const,
+				errorStatus: 401,
+				errorMessage: "Invalid API key",
+				timestamp: Date.now(),
+			};
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "error", reason: "error", error: message });
+			});
+			return stream;
+		};
+
+		// key 失效:重连无意义,第一次 401 即暂停。
 		await session.prompt("start the work");
 		await session.waitForIdle();
-
-		expect(promptSpy).toHaveBeenCalled();
-		expect(promptSpy.mock.calls[0]?.[0]?.content).toContain("Ship the release");
-		// The continuation turn actually ran against the provider.
-		expect(providerCall).toBeGreaterThanOrEqual(2);
+		expect(providerCall).toBe(1);
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
 	});
 
 	it("todo reminder resumes work after an error-settled turn when todo.resumeAfterError is on", async () => {
@@ -290,6 +369,54 @@ describe("session-layer goal continuation", () => {
 		expect(session.isStreaming).toBe(false);
 	});
 
+	it("aborts a non-goal long streaming turn before any follow-up provider call (AC-1)", async () => {
+		session.settings.set("todo.enabled", false);
+
+		let providerCall = 0;
+		const firstRelease = Promise.withResolvers<void>();
+		const streamBegan = Promise.withResolvers<void>();
+		session.agent.streamFn = () => {
+			const n = providerCall++;
+			if (n === 0) streamBegan.resolve();
+			const message = {
+				role: "assistant" as const,
+				content: [{ type: "text" as const, text: `stream ${n}` }],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "length" as const,
+				timestamp: Date.now(),
+			};
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				if (n === 0) firstRelease.promise.then(() => stream.push({ type: "done", reason: "length", message }));
+				else stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		const running = session.prompt("start the work");
+		await streamBegan.promise;
+		const aborting = session.abort();
+		await aborting;
+		await session.waitForIdle();
+
+		// AC-1: 非 goal 长流转下 ESC 一次确实停下:provider 只被叫过一次,stream 停住。
+		expect(providerCall).toBe(1);
+		expect(session.isStreaming).toBe(false);
+		firstRelease.resolve();
+		await running.catch(() => {});
+	});
+
 	it("auto-resumes a paused goal when the user submits a new prompt", async () => {
 		await session.goalRuntime.createGoal({ objective: "Ship the release" });
 		await session.goalRuntime.pauseGoal();
@@ -319,5 +446,168 @@ describe("session-layer goal continuation", () => {
 		await session.waitForIdle();
 
 		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+	});
+
+	it("creates a goal linked to a freshly initialised todo list", async () => {
+		expect(session.getGoalModeState()).toBeUndefined();
+		mockTextStop("done");
+
+		// 驱动真实事件链:todo init 的 toolResult 必须挂出联动 goal。
+		emitTodoInit([
+			{ name: "Build", tasks: [{ content: "scaffold", status: "pending" }] },
+			{ name: "Verify", tasks: [{ content: "tests", status: "pending" }] },
+		]);
+		await session.waitForIdle();
+
+		const state = session.getGoalModeState();
+		expect(state?.enabled).toBe(true);
+		expect(state?.goal.status).toBe("active");
+		expect(state?.goal.objective).toBe("Complete todo list: Build, Verify");
+	});
+
+	it("auto-completes the linked goal when a todo tool result completes every task", async () => {
+		// 用户报障:模型驱动的 `todo done` 只写 session 条目,内存 tracker 不更新,
+		// onAllTodosCompleted 不触发 → 联动 goal 不自动 complete → 运行时不退出。
+		emitTodoInit();
+		await session.waitForIdle();
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
+
+		const toolCallId = "call_todo_done";
+		const usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", id: toolCallId, name: "todo", arguments: { op: "done" } }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "toolUse",
+				usage,
+				timestamp: Date.now(),
+			},
+		});
+		// 事件驱动等待 goal 变 complete(先挂订阅再触发完成,避免漏事件)。
+		const completeGate = (async () => {
+			if (session.getGoalModeState()?.goal.status === "complete") return;
+			await new Promise<void>(resolve => {
+				const off = session.subscribe(event => {
+					if (event.type === "goal_updated" && event.goal?.status === "complete") {
+						off();
+						resolve();
+					}
+				});
+			});
+		})();
+		// 模型完成最后一个任务:todo 工具结果携带 post-op phases(全 completed)。
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "todo",
+				content: [{ type: "text", text: "ok" }],
+				isError: false,
+				details: {
+					op: "done",
+					phases: [{ name: "Build", tasks: [{ content: "scaffold", status: "completed" }] }],
+				},
+				timestamp: Date.now(),
+			},
+		});
+		// 联动 goal 随全完成自动 complete(经 accounting 队列异步落地);运行时链条终止。
+		await completeGate;
+		expect(session.getGoalModeState()?.goal.status).toBe("complete");
+	});
+
+	it("does not clobber an existing goal when a todo list is initialised", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("done");
+
+		emitTodoInit();
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.objective).toBe("Ship the release");
+	});
+
+	it("auto-completes the todo-linked goal when every task completes", async () => {
+		mockTextStop("done");
+		emitTodoInit();
+		await session.waitForIdle();
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
+
+		// 生产链路里 todo 工具成功后调用的正是这个入口(tools/todo.ts)。
+		session.setTodoPhases([
+			{ name: "Build", tasks: [{ content: "scaffold", status: "completed" }] },
+			{ name: "Verify", tasks: [{ content: "tests", status: "completed" }] },
+		]);
+		await session.waitForIdle();
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.status).toBe("complete");
+	});
+
+	it("leaves a user goal untouched when the todo list completes", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("done");
+
+		session.setTodoPhases([{ name: "Build", tasks: [{ content: "scaffold", status: "completed" }] }]);
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.status).toBe("active");
+		expect(state?.goal.objective).toBe("Ship the release");
+	});
+
+	it("drops the todo-linked goal when the user clears the todo list", async () => {
+		mockTextStop("done");
+		emitTodoInit();
+		await session.waitForIdle();
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
+
+		// /todo clear 语义:清单没了主体就没了,goal 应 drop 而不是继续驱动续跑。
+		session.setTodoPhases([]);
+		await session.waitForIdle();
+
+		expect(session.getGoalModeState()).toBeUndefined();
+	});
+
+	it("leaves a user goal untouched when the todo list is cleared", async () => {
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		mockTextStop("done");
+
+		session.setTodoPhases([]);
+
+		const state = session.getGoalModeState();
+		expect(state?.goal.objective).toBe("Ship the release");
+	});
+
+	it("does not drop or complete the abandoned goal on /new", async () => {
+		mockTextStop("done");
+		emitTodoInit();
+		await session.waitForIdle();
+		const oldFile = session.sessionManager.getSessionFile();
+		if (!oldFile) throw new Error("expected session file");
+		const modes = async (): Promise<string[]> =>
+			(await Bun.file(oldFile).text())
+				.split("\n")
+				.filter(line => line.includes('"mode_change"'))
+				.map(line => String(JSON.parse(line).mode));
+		const before = await modes();
+
+		await session.newSession();
+
+		// /new 后新会话无 goal。旧 journal 只允许既有 abort 路径的 "goal_paused";
+		// 空清单路径不得追加 drop("none")或 complete(第二条 "goal")。
+		expect(session.getGoalModeState()).toBeUndefined();
+		const after = await modes();
+		expect(after).not.toContain("none");
+		expect(after.filter(mode => mode === "goal").length).toBe(before.filter(mode => mode === "goal").length);
 	});
 });

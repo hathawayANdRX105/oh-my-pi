@@ -50,7 +50,10 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
 			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
 			// Bytecode rejects top-level await in the bundle graph.
-			bytecode: true,
+			// BUN_COMPILE_BYTECODE=0 trades the boot speedup back for the
+			// 52 MB; btrfs-zstd roots already shrink the file on disk, so the
+			// knob exists for measured choice, not speculation.
+			bytecode: Bun.env.BUN_COMPILE_BYTECODE !== "0",
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,

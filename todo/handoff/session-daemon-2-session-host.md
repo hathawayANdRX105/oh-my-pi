@@ -1,11 +1,13 @@
 # feat(coding-agent): host many sessions in one broker process
 
-基线：fork/main `b672cf020c`    worktree：`.wt/session-daemon-2-host`    分支：`feat/session-daemon-host`
-关联：无 issue。前置：阶段 0 判定「进入阶段 2」，且阶段 1 已合并或明确放弃。本阶段才是用户要的模型：一个进程付运行时，每个客户端只付自己的会话。
+> Superseded（2026-09-24）：本任务书由 `docs/scope/scope.md`（方案 A 与方案 B）与 `docs/specs/0001-session-host-slim-viewer/` 取代。本文 §1 的全局读取点清单与 §2 的调用面调查仍作为改造清单使用，其余门槛与验收条款以新 spec 为准。
+
+基线：fork/main `0ac1b4222e`    worktree：`.wt/session-daemon-2-host`    分支：`feat/session-daemon-host`
+关联：无 issue。前置：阶段 1 已合并（PR #4，`ebe725227f`）。目标（用户原话口径）：总内存 = daemon 的内存 + N 个会话的内存；bun 运行时与应用模块图单份，所有会话跑在 host 里，客户端不再实例化会话运行时，省掉 N-1 份运行时。
 
 ## 0 出发前：基线与禁区
 
-- 基线：阶段 1 的合并提交；阶段 1 放弃时从 `b672cf020c` 起。任务书开工时把实际 SHA 填进本行，不许写「最新」。
+- 基线：`0ac1b4222e`（fork.4，含阶段 1）。任务书开工时把实际 SHA 填进本行，不许写「最新」。
 - worktree：`git worktree add .wt/session-daemon-2-host -b feat/session-daemon-host <基线SHA>`。禁止在根工作树改文件。
 - 图：当前调查已在 `main` 的 `b672cf020c` 完成；worktree 开工后再次 `cg refresh`，graph commit 必须等于实际基线。
 - 禁改区：`.githooks/`、`packages/catalog/src/models.json`、jcode 仓库、`DaemonBroker` 的 PTY/dev-server 监督。
@@ -97,11 +99,11 @@
 
 - [ ] `bun test packages/coding-agent/test/launch/session-host.test.ts` 通过 — `<SHA>`
 - [ ] `git diff --name-only <基线>..HEAD` 全在 §1 — `<SHA>`
-- [ ] §6 的两个客户端 RSS：第二个进程比自己单独冷启动的空 omp 至少少阶段 0 测得的「运行时与模块图」的一半 — `<SHA>`
+- [ ] 第二个客户端不执行本地 `createAgentSession`：attach/resume 全部走协议，由 session-host 测试断言 — `<SHA>`
 - [ ] `cg changes <基线>` 非 critical — 回执写 risk
 - [ ] `git grep -n process.chdir packages/coding-agent/src/launch packages/coding-agent/src/modes packages/coding-agent/src/main.ts` 没有 host 路径上的新调用 — `<SHA>`
 
-省内存这条规定以阶段 0 的桶为准。阶段 0 没给数字，本条不能打勾。
+内存不设虚构阈值：§6 smoke 实测回执 RSS 与 PSS 各一行（同一二进制的运行时代码页由 OS 文件映射在多进程间共享，RSS 高估每会话成本，PSS 才反映真实占用）。交付时附数字，方向对齐目标：总内存 = daemon + N 会话。
 
 ## 6 模拟测试功能(smoke)
 
@@ -142,6 +144,5 @@ cwd：worktree 根，使用一个只有少量文件的临时项目，避免把�
 
 未开工。开工条件：
 
-1. 阶段 0 回执判定是「进入阶段 2」，并写了运行时桶的 MB。
-2. 阶段 1 已合并，或回执写明放弃及原因。
-3. 本文件开头的基线 SHA 已改成实际值。
+1. 阶段 1 已合并（PR #4，`ebe725227f`）。
+2. 本文件开头的基线 SHA 已改成实际值。

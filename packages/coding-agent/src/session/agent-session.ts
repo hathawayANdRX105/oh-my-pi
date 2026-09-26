@@ -405,6 +405,8 @@ import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
 const PLAN_MODE_REMINDER_MAX = 3;
+/** Objective prefix of goals auto-created by the todo list; matched on auto-complete. */
+const TODO_GOAL_OBJECTIVE_PREFIX = "Complete todo list: ";
 const POST_PROMPT_DRAIN_TIMEOUT_MS = 5_000;
 const AGENT_START_POLICY_MAX_ATTEMPTS = 3;
 
@@ -1389,8 +1391,13 @@ export class AgentSession {
 			getEnabledToolNames: () => this.getEnabledToolNames(),
 			toolRegistry: () => this.#tools.registry,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
+			goalContinuationActive: () => {
+				const state = this.#goalModeState;
+				return state?.enabled === true && state.goal.status === "active";
+			},
 			prewalkWillHandoff: () => this.#prewalk.willHandoff,
 			consumeLastServedToolChoiceLabel: () => this.#toolChoiceQueue.consumeLastServedLabel(),
+			onAllTodosCompleted: () => this.#completeTodoLinkedGoal(),
 		};
 		this.#todo = new TodoTracker(todoHost);
 		this.#goalContinuation = new GoalContinuation({
@@ -1411,6 +1418,7 @@ export class AgentSession {
 				}),
 			buildContinuationPrompt: () => this.#goalRuntime.buildContinuationPrompt(),
 			getPromptGeneration: () => this.#promptGeneration,
+			pauseRequested: () => this.#goalRuntime.pauseRequested,
 		});
 		this.#modelMentions = new ModelMentionRegistry({
 			sessionManager: this.sessionManager,
@@ -3106,7 +3114,8 @@ export class AgentSession {
 		// and only successful mutating tools tick — read-only exploration is
 		// not progress an agent could mark done.
 		if (event.type === "message_end" && event.message.role === "toolResult") {
-			this.#todo.onToolResult(event.message.toolName, event.message.isError);
+			const details = isRecord(event.message.details) ? event.message.details : undefined;
+			this.#todo.onToolResult(event.message.toolName, event.message.isError, details);
 		}
 		// Track the settled assistant turn synchronously as well: agent_end
 		// maintenance reads `#lastAssistantMessage`, and when a turn's events all
@@ -3417,15 +3426,21 @@ export class AgentSession {
 				const details = isRecord(event.message.details) ? event.message.details : undefined;
 				const semanticResult = semanticToolResult(toolName, event.message);
 				const semanticDetails = isRecord(semanticResult?.details) ? semanticResult.details : undefined;
-				if (toolName === "todo" && !isError && details && this.#todo.onTodoResultDetails(details, toolCallId)) {
-					this.#scheduleReplanTitleRefresh();
+				if (toolName === "todo" && !isError && details) {
+					// 所有成功的 todo op 结果都带 post-op phases:写回 tracker,
+					// 全完成结果经 setPhases 触发 onAllTodosCompleted → 联动 goal 自动 complete。
+					this.#todo.applyToolResultPhases(details);
+					if (this.#todo.onTodoResultDetails(details, toolCallId)) {
+						this.#scheduleReplanTitleRefresh();
+						this.#linkGoalToTodoList(details);
+					}
 				}
 				if (toolName === "todo" && isError) {
 					const errorText = content.find(part => part.type === "text")?.text;
 					const reminderText = [
 						"<system-reminder>",
 						"todo failed, so todo progress is not visible to the user.",
-						errorText ? `Failure: ${errorText}` : "Failure: todo returned an error.",
+						errorText ? `Failure: ${errorText}.` : "Failure: todo returned an error.",
 						"Fix the todo payload and call todo again before continuing.",
 						"</system-reminder>",
 					].join("\n");
@@ -8021,6 +8036,10 @@ export class AgentSession {
 	}
 
 	setTodoPhases(phases: TodoPhase[]): void {
+		// 用户清空清单(/todo clear、面板删光、RPC set_todos)→ 联动 goal 失去主体,
+		// 语义是 drop 而非 complete(系统提醒已承诺"不要重建清单",不能留着 goal 驱动续跑)。
+		// /new 路径已先行清理 #goalModeState,不会误伤已废弃会话。
+		if (phases.length === 0) this.#dropTodoLinkedGoal();
 		this.#todo.setPhases(phases);
 	}
 
@@ -8124,6 +8143,40 @@ export class AgentSession {
 				}
 			});
 		this.#replanTitleRefreshInFlight = refresh;
+	}
+
+	/** 建 todo 列表时若没有 active goal,自动挂一个(前缀标记);
+	 * goal continuation 会持续驱动直到列表全部完成。既有 goal(含 paused)不动。 */
+	#linkGoalToTodoList(details: Record<string, unknown>): void {
+		if (this.#goalModeState?.enabled) return;
+		const phases = Array.isArray(details.phases) ? (details.phases as Array<{ name?: unknown }>) : [];
+		const names = phases.map(phase => (typeof phase.name === "string" ? phase.name : "")).filter(Boolean);
+		const objective = `${TODO_GOAL_OBJECTIVE_PREFIX}${names.join(", ") || "the todo list"}`;
+		void this.#goalRuntime.createGoal({ objective }).catch(err => {
+			// 已有 goal 会挡创建(createGoal 守卫);尊重现状,不强写。
+			logger.debug("todo -> goal link skipped", { err });
+		});
+	}
+
+	/** todos 全完成 → 自动 complete 由 todo 联动创建的 goal(前缀匹配);用户 goal 不动。 */
+	#completeTodoLinkedGoal(): void {
+		const state = this.#goalModeState;
+		if (state?.enabled !== true || state.goal.status !== "active") return;
+		if (!state.goal.objective.startsWith(TODO_GOAL_OBJECTIVE_PREFIX)) return;
+		void this.#goalRuntime.completeGoalFromTool().catch(err => {
+			logger.debug("todo -> goal auto-complete failed", { err });
+		});
+	}
+
+	/** todos 被清空 → drop 由 todo 联动创建的 goal(前缀匹配,active/paused 均可);用户 goal 不动。 */
+	#dropTodoLinkedGoal(): void {
+		const state = this.#goalModeState;
+		if (!state?.goal) return;
+		if (!state.goal.objective.startsWith(TODO_GOAL_OBJECTIVE_PREFIX)) return;
+		if (state.goal.status !== "active" && state.goal.status !== "paused") return;
+		void this.#goalRuntime.dropGoal().catch(err => {
+			logger.debug("todo -> goal drop on clear failed", { err });
+		});
 	}
 
 	/**
@@ -8330,8 +8383,12 @@ export class AgentSession {
 			}
 			this.abortBash();
 			this.abortEval();
-			const postPromptDrain = this.#cancelPostPromptTasks();
+			// ESC/中断:同步置位 pause flag。中断 settle 与已排队的延后续跑提交会在
+			// onTaskAborted(waitForIdle 之后)落地前读取标志;晚置位让重连漏过 ESC,
+			// 随后 agent_start 自动 resume 把循环重新拉起来。
+			this.#goalRuntime.requestPauseSync();
 			this.agent.abort(options?.reason);
+			const postPromptDrain = this.#cancelPostPromptTasks();
 			await postPromptDrain;
 			await this.agent.waitForIdle();
 			// `/compact` disconnects the agent subscription until its finally block.
@@ -8436,6 +8493,11 @@ export class AgentSession {
 
 			this.#clearSessionScopedToolState();
 			this.#clearCheckpointRuntimeState();
+			// /new 后 goal 状态属于新会话:先清内存态,否则紧随的 setTodoPhases([])
+			// 会以旧会话的联动 goal 触发 drop,向已废弃会话的 journal 写 mode_change。
+			// 旧 journal 的 goal 记录保持原样,由 resume 语义处理。
+			this.#goalModeState = undefined;
+			this.#goalRuntime.clearAccounting();
 			this.setTodoPhases([]);
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();

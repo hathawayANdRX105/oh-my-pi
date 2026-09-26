@@ -43,6 +43,28 @@ interface PromptLine {
 	hadPromptLabel: boolean;
 }
 
+/**
+ * Merge a post-op `done` snapshot over the current phases: completed status is
+ * sticky per task, so a stale parallel view can never roll a completion back.
+ * `done` ops never remove tasks, so the current structure stays authoritative.
+ */
+function mergeDonePhases(current: TodoPhase[], incoming: TodoPhase[]): TodoPhase[] {
+	if (current.length === 0) return incoming;
+	return current.map(phase => {
+		const doneTasks =
+			incoming.find(candidate => candidate.name === phase.name)?.tasks.filter(task => task.status === "completed") ??
+			[];
+		return {
+			...phase,
+			tasks: phase.tasks.map(task =>
+				doneTasks.some(candidate => candidate.content === task.content)
+					? { ...task, status: "completed" as const }
+					: task,
+			),
+		};
+	});
+}
+
 /** Capabilities the todo tracker borrows from its owning session. */
 export interface TodoTrackerHost {
 	agent: Agent;
@@ -58,9 +80,13 @@ export interface TodoTrackerHost {
 	getEnabledToolNames(): string[];
 	toolRegistry(): Map<string, AgentTool>;
 	planModeEnabled(): boolean;
+	/** Active goal owns continuation; error-settle reminders must not stack a second failing turn on top of it. */
+	goalContinuationActive?(): boolean;
 	/** Whether prewalk will hand off after its plan nudge owns todo creation. */
 	prewalkWillHandoff(): boolean;
 	consumeLastServedToolChoiceLabel(): string | undefined;
+	/** Fired once when every todo in the current list is completed (none pending/in_progress/blocked). */
+	onAllTodosCompleted?(): void;
 }
 
 /** Owns canonical todo state, eager preludes, and completion reminders. */
@@ -68,7 +94,6 @@ export class TodoTracker {
 	readonly #host: TodoTrackerHost;
 	#phases: TodoPhase[] = [];
 	#reminderCount = 0;
-	#reminderAwaitingProgress = false;
 	#mutationsSinceLastTouch = 0;
 	#midRunNudgeCount = 0;
 
@@ -84,11 +109,43 @@ export class TodoTracker {
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
+		// 全完成 = 每项都 completed（abandoned/blocked 不算完成）。挂在唯一变更
+		// 汇聚点上（工具结果 / 面板编辑 / 分支切换都经此），不依赖 reminder 设置。
+		if (
+			phases.length > 0 &&
+			phases.every(phase => phase.tasks.length > 0 && phase.tasks.every(task => task.status === "completed"))
+		) {
+			this.#host.onAllTodosCompleted?.();
+		}
 	}
 
 	/** Rehydrates todo phases from the current transcript branch. */
 	syncFromBranch(): void {
+		// Every call site is a branch transition (resume/rewind/fork/switch/tree):
+		// the previous cycle's reminder and mutation budgets no longer apply.
+		this.resetCycle();
 		this.setPhases(getLatestTodoPhasesFromEntries(this.#host.sessionManager.getBranch()));
+	}
+
+	/**
+	 * Applies the post-op phases carried by a successful `todo` tool result so the
+	 * in-memory list stays live during a run (the branch sync only happens at
+	 * transitions). Funnelled through setPhases, so a fully-completed result fires
+	 * onAllTodosCompleted — the auto-exit point for the linked goal.
+	 * `done` results merge instead of replace: a batch of exclusive done calls runs
+	 * in parallel, so each result carries a stale view — a completed task must not
+	 * regress behind an earlier call's completion in persistence order.
+	 * @returns true when the tracker was updated.
+	 */
+	applyToolResultPhases(details: Record<string, unknown>): boolean {
+		const phases = details.phases;
+		if (!Array.isArray(phases) || !phases.every(isTodoPhase)) return false;
+		if (stringProperty(details, "op") === "done") {
+			this.setPhases(mergeDonePhases(this.#phases, phases));
+		} else {
+			this.setPhases(phases);
+		}
+		return true;
 	}
 
 	/** Returns a defensive clone suitable for snapshots and branch state. */
@@ -99,19 +156,26 @@ export class TodoTracker {
 	/** Resets per-prompt reminder and mutation budgets. */
 	resetCycle(): void {
 		this.#reminderCount = 0;
-		this.#reminderAwaitingProgress = false;
 		this.#mutationsSinceLastTouch = 0;
 		this.#midRunNudgeCount = 0;
 	}
 
 	/** Records a completed tool result before asynchronous event processing begins. */
-	onToolResult(toolName: string, isError: boolean): void {
+	onToolResult(toolName: string, isError: boolean, details?: Record<string, unknown>): void {
+		const todoOp = details ? stringProperty(details, "op") : undefined;
+		const todoProgress = toolName === "todo" && !isError && todoOp !== undefined && todoOp !== "view";
 		if (toolName === "todo") {
 			this.#mutationsSinceLastTouch = 0;
 		} else if (!isError && MUTATING_TOOLS[toolName]) {
 			this.#mutationsSinceLastTouch++;
 		}
-		this.#reminderAwaitingProgress = false;
+		if (todoProgress || (!isError && MUTATING_TOOLS[toolName])) {
+			// Tool-level progress refreshes the stop-time budget: remindersMax
+			// bounds consecutive NO-progress chains, so a working task runs to
+			// completion (ESC still wins). Read-only results and failed calls
+			// deliberately do not refresh it.
+			this.#reminderCount = 0;
+		}
 	}
 
 	/** Detects whether a successful todo result came from an init operation. */
@@ -205,15 +269,8 @@ export class TodoTracker {
 	async checkCompletion(message: AssistantMessage): Promise<boolean> {
 		if (this.#host.consumeLastServedToolChoiceLabel() === "user-force") return false;
 		if (this.#host.planModeEnabled()) return false;
-		if (this.#reminderAwaitingProgress) {
-			logger.debug("Todo completion: prior reminder still awaiting agent action; staying silent", {
-				attempt: this.#reminderCount,
-			});
-			return false;
-		}
 		if (!this.#host.settings.get("todo.reminders") || !this.#host.settings.get("todo.enabled")) {
 			this.#reminderCount = 0;
-			this.#reminderAwaitingProgress = false;
 			return false;
 		}
 		const remindersMax = this.#host.settings.get("todo.remindersMax");
@@ -224,7 +281,6 @@ export class TodoTracker {
 		const phases = this.phases;
 		if (phases.length === 0) {
 			this.#reminderCount = 0;
-			this.#reminderAwaitingProgress = false;
 			return false;
 		}
 		const incompleteByPhase = phases
@@ -241,11 +297,18 @@ export class TodoTracker {
 		const incomplete = incompleteByPhase.flatMap(phase => phase.tasks);
 		if (incomplete.length === 0) {
 			this.#reminderCount = 0;
-			this.#reminderAwaitingProgress = false;
 			return false;
 		}
 		if (isAwaitingUserAnswer(message)) {
 			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
+				incomplete: incomplete.length,
+			});
+			return false;
+		}
+		if (message.stopReason === "error" && this.#host.goalContinuationActive?.() === true) {
+			// goal-continuation 拥有 error settle 之后的续跑语义:注入 todo reminder
+			// 只会给坏掉的 provider 再叠一个失败请求(502 放大),不注入。
+			logger.debug("Todo completion: active goal owns the continuation after an error settle; skipping reminder", {
 				incomplete: incomplete.length,
 			});
 			return false;
@@ -264,6 +327,8 @@ export class TodoTracker {
 			`<system-reminder>\n` +
 			`You stopped with ${incomplete.length} incomplete todo item(s):\n${todoList}\n\n` +
 			`Please continue working on these tasks or mark them complete if finished.\n` +
+			`If a task is truly unfinishable now, mark it blocked via the \`todo\` tool (op \`block\`, with reason) — ` +
+			`blocked tasks are the only legal stop signal; never stop with an acknowledgment-only reply.\n` +
 			`(Reminder ${this.#reminderCount}/${remindersMax})\n` +
 			`</system-reminder>`;
 		logger.debug("Todo completion: sending reminder", {
@@ -283,7 +348,6 @@ export class TodoTracker {
 			timestamp: Date.now(),
 		};
 		this.#mutationsSinceLastTouch = 0;
-		this.#reminderAwaitingProgress = true;
 		this.#host.agent.appendMessage(reminderMessage);
 		this.#host.sessionManager.appendMessage(reminderMessage);
 		this.#host.scheduleAgentContinue({

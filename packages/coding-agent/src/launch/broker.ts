@@ -645,9 +645,7 @@ class DaemonBroker {
 				// Final guard: coerce any residual typed-array (Float32Array from
 				// the embed provider) or scalar row into a plain number array so
 				// the wire payload parses as `number[][]`.
-				const matrix = vectors.map(row =>
-					Array.isArray(row) ? row : (Array.from(row as ArrayLike<number>)),
-				);
+				const matrix = vectors.map(row => (Array.isArray(row) ? row : Array.from(row as ArrayLike<number>)));
 				return { op: "embed", vectors: matrix };
 			}
 			case "mcp-ensure":

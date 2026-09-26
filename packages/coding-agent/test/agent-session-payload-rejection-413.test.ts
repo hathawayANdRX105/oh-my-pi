@@ -1056,6 +1056,9 @@ describe("AgentSession payload-rejection 413 handling", () => {
 				updatedAt: now,
 			},
 		});
+		// 测试会话无 provider:active goal 下 goal-continuation 驱动会重发续跑轮,
+		// 干扰 413/fallback 链的请求计数与 settle 时序,封掉。
+		session.setGoalContinuationBlocker(() => true);
 	}
 
 	it("consults a configured fallback chain in goal mode before any maintenance outcome stands", async () => {

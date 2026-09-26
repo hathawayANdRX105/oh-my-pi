@@ -525,7 +525,7 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(await toolNamesFor(harness)).toContain("goal");
 	});
 
-	it("mutates the goal token budget via /goal budget without resetting accumulated usage", async () => {
+	it("keeps the goal unbounded via /goal budget without resetting accumulated usage", async () => {
 		await harness.mode.handleGoalModeCommand("Ship the release");
 		// Seed accumulated usage by driving the runtime directly — equivalent to a turn's flush.
 		const goal = harness.session.getGoalModeState()?.goal;
@@ -536,7 +536,7 @@ describe("InteractiveMode goal mode integration", () => {
 		await harness.mode.handleGoalModeCommand("budget 123");
 
 		const after = harness.session.getGoalModeState();
-		expect(after?.goal.tokenBudget).toBe(123);
+		expect(after?.goal.tokenBudget).toBeUndefined();
 		// Accumulated counters are preserved across the mutation.
 		expect(after?.goal.tokensUsed).toBe(42);
 		expect(after?.goal.timeUsedSeconds).toBe(5);
@@ -562,7 +562,6 @@ describe("InteractiveMode goal mode integration", () => {
 
 	it("returns the completion report from the goal tool and exits goal mode before the next turn rebuild", async () => {
 		await harness.mode.handleGoalModeCommand("Ship the release");
-		await harness.mode.handleGoalModeCommand("budget 50");
 		const appendCustomEntry = vi.spyOn(harness.session.sessionManager, "appendCustomEntry");
 		const goalTool = (await createTools(harness.toolSession, harness.session.getActiveToolNames())).find(
 			tool => tool.name === "goal",
@@ -574,10 +573,8 @@ describe("InteractiveMode goal mode integration", () => {
 		const result = await goalTool.execute("call-1", { op: "complete" });
 		const completionText = JSON.stringify(result.content);
 
-		expect(result.details?.completionBudgetReport).toBe(
-			"Goal achieved. Report final budget usage to the user: tokens used: 0 of 50.",
-		);
-		expect(completionText).toContain("Goal achieved. Report final budget usage to the user: tokens used: 0 of 50.");
+		expect(result.details?.completionBudgetReport).toBeNull();
+		expect(completionText).toContain("Status: complete");
 		expect(harness.session.getGoalModeState()?.mode).toBe("exiting");
 		// Per fix #1: completeGoalFromTool clears state.enabled so subsequent createTools
 		// calls (e.g. mid-turn refreshes) no longer advertise the goal tool. The model's
@@ -595,12 +592,11 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(harness.mode.goalModeEnabled).toBe(false);
 		expect(harness.mode.goalModePaused).toBe(false);
 		expect(harness.session.getGoalModeState()).toBeUndefined();
-		expect(await toolNamesFor(harness)).not.toContain("goal");
+		expect(await toolNamesFor(harness)).toContain("goal");
 		expect(appendCustomEntry).toHaveBeenCalledWith(
 			"goal-completed",
 			expect.objectContaining({
 				objective: "Ship the release",
-				tokenBudget: 50,
 				tokensUsed: 0,
 			}),
 		);

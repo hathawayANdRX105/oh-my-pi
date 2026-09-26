@@ -4142,7 +4142,8 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Todos",
 			label: "Todo Reminder Limit",
-			description: "Maximum number of todo reminders before giving up",
+			description:
+				"Maximum consecutive todo reminders without tool-level progress before giving up (the budget refreshes when the agent makes progress)",
 			options: [
 				{ value: "1", label: "1 reminder" },
 				{ value: "2", label: "2 reminders" },
