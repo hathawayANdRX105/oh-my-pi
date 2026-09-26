@@ -158,7 +158,7 @@ describe("session-layer goal continuation", () => {
 		expect(promptSpy).not.toHaveBeenCalled();
 	});
 
-	it("does not submit a goal-continuation on an error settle; auto-pauses after two consecutive error settles", async () => {
+	it("keeps the goal active across user-driven outage retries; auto-pauses only unattended system chains", async () => {
 		session.settings.set("retry.enabled", false);
 		await session.goalRuntime.createGoal({ objective: "Ship the release" });
 
@@ -192,21 +192,20 @@ describe("session-layer goal continuation", () => {
 		};
 
 		const promptSpy = vi.spyOn(session, "promptCustomMessage");
+		// 故障期间的用户重试 #1/#2:用户源 error settle 重置连败计数,goal 全程
+		// active——"重新发 prompt 继续工作"不再被自动暂停(resume→pause 抖动消除)。
+		// (连败计数/系统注入链的暂停语义由 goal-continuation.test.ts 单测覆盖。)
 		await session.prompt("start the work");
 		await session.waitForIdle();
-
-		// 一次 error settle:不提交续跑(失败请求之后的自动重试只会制造第二个
-		// error settle,让刚 resume 的 goal 立刻再被暂停),goal 保持 active。
 		expect(promptSpy).not.toHaveBeenCalled();
 		expect(providerCall).toBe(1);
 		expect(session.getGoalModeState()?.goal.status).toBe("active");
 
-		// 用户重发 prompt(故障期间再次 error settle)= 第二个连续失败 → 自动暂停。
 		await session.prompt("retry");
 		await session.waitForIdle();
 		expect(promptSpy).not.toHaveBeenCalled();
 		expect(providerCall).toBe(2);
-		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+		expect(session.getGoalModeState()?.goal.status).toBe("active");
 	});
 
 	it("todo reminder resumes work after an error-settled turn when todo.resumeAfterError is on", async () => {

@@ -1419,6 +1419,7 @@ export class AgentSession {
 			buildContinuationPrompt: () => this.#goalRuntime.buildContinuationPrompt(),
 			getPromptGeneration: () => this.#promptGeneration,
 			pauseRequested: () => this.#goalRuntime.pauseRequested,
+			lastRunUserOrigin: () => this.#lastPromptOrigin === "user",
 		});
 		this.#modelMentions = new ModelMentionRegistry({
 			sessionManager: this.sessionManager,

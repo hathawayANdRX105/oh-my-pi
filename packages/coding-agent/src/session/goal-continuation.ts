@@ -52,6 +52,8 @@ export class GoalContinuation {
 			getPromptGeneration: () => number;
 			/** 同步的暂停请求标志:ESC/abort 已请求 pause 但状态还在异步提交队列里时,本 settle 不得 re-arm。 */
 			pauseRequested?: () => boolean;
+			/** 刚 settle 的轮次是否用户驱动:用户驱动期间连败计数不复利(见 error 分支)。 */
+			lastRunUserOrigin?: () => boolean;
 		},
 	) {}
 
@@ -92,6 +94,12 @@ export class GoalContinuation {
 		// 再被暂停(resume→pause 抖动)。goal 保持 active,等下一次成功 settle
 		// 或用户的新 prompt(经 agent_start 自动 resume)再驱动。
 		if (message.stopReason === "error") {
+			// 用户驱动的失败轮次不累积连败:重发 prompt 期间 provider 随时可能恢复,
+			// 让"重新发 prompt 继续工作"触发自动暂停会重现 resume→pause 死循环。
+			// 只有无用户介入的系统自驱轮次(注入链)的连续失败才累积到自动暂停。
+			// ponytail: agent.continue() 不改 lastPromptOrigin,紧随用户 prompt 的
+			// 注入轮次也读到 user——Fix A 之后 error settle 已无自驱链,该泄漏无实际危害。
+			if (this.host.lastRunUserOrigin?.()) this.#consecutiveErrorSettles = 0;
 			this.#consecutiveErrorSettles++;
 			if (this.#consecutiveErrorSettles >= 2) {
 				logger.warn("Goal auto-paused after repeated error settles", {
