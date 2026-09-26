@@ -1508,6 +1508,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 				updatedAt: now,
 			},
 		});
+		// 测试会话没有可用 provider:active goal 的 goal-continuation 重连循环会持续
+		// 重发失败续跑轮,挂住 waitForIdle。本测试只验证 compaction 行为,封掉续跑驱动。
+		session.setGoalContinuationBlocker(() => true);
 
 		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
 			session.agent.clearAllQueues();
@@ -1631,6 +1634,9 @@ describe("AgentSession auto-compaction queue resume", () => {
 				updatedAt: now,
 			},
 		});
+		// 同上:active goal 下封掉 goal-continuation 驱动,避免无 provider 会话里
+		// 重连循环挂住会话,本测试只验证 retry→compaction 时序。
+		session.setGoalContinuationBlocker(() => true);
 		session.settings.set("compaction.thresholdTokens", 76384);
 		session.settings.set("compaction.thresholdPercent", -1);
 		session.settings.set("compaction.autoContinue", true);
