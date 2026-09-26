@@ -158,7 +158,7 @@ describe("session-layer goal continuation", () => {
 		expect(promptSpy).not.toHaveBeenCalled();
 	});
 
-	it("keeps the goal active across user-driven outage retries; auto-pauses only unattended system chains", async () => {
+	it("reconnects through provider outages and auto-pauses only after 11 consecutive same-code errors", async () => {
 		session.settings.set("retry.enabled", false);
 		await session.goalRuntime.createGoal({ objective: "Ship the release" });
 
@@ -180,6 +180,7 @@ describe("session-layer goal continuation", () => {
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				},
 				stopReason: "error" as const,
+				errorStatus: 502,
 				errorMessage: "502 JSON error injected into SSE stream",
 				timestamp: Date.now(),
 			};
@@ -191,21 +192,76 @@ describe("session-layer goal continuation", () => {
 			return stream;
 		};
 
-		const promptSpy = vi.spyOn(session, "promptCustomMessage");
-		// 故障期间的用户重试 #1/#2:用户源 error settle 重置连败计数,goal 全程
-		// active——"重新发 prompt 继续工作"不再被自动暂停(resume→pause 抖动消除)。
-		// (连败计数/系统注入链的暂停语义由 goal-continuation.test.ts 单测覆盖。)
+		/** 等待下一次 goal 自动暂停(goal_updated 事件,无定时器猜测)。 */
+		const waitForNextPause = (): Promise<void> => {
+			const { promise, resolve } = Promise.withResolvers<void>();
+			const off = session.subscribe(event => {
+				if (event.type === "goal_updated" && event.goal.status === "paused") {
+					off();
+					resolve();
+				}
+			});
+			return promise;
+		};
+
+		// 故障期间会话不停摆:用户 prompt 失败后自动重连续跑,直到同一 502
+		const pausedFirst = waitForNextPause();
+		await session.prompt("start the work");
+		await pausedFirst;
+		// 暂停事件先于 agent unwind 完成:等 unwind 结束后再断言/继续,
+		// 避免下一个 prompt 撞上 AgentBusyError(与 TUI 800ms 延时同一竞态)。
+		await session.waitForIdle();
+		expect(providerCall).toBe(11);
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+
+		// 用户重发 prompt:agent_start 自动 resume,重连循环重新开始(计数清零),
+		const pausedSecond = waitForNextPause();
+		await session.prompt("retry");
+		await pausedSecond;
+		await session.waitForIdle();
+		expect(providerCall).toBe(22);
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
+	});
+
+	it("stops reconnecting immediately on an auth failure (401)", async () => {
+		session.settings.set("retry.enabled", false);
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+
+		let providerCall = 0;
+		session.agent.streamFn = () => {
+			providerCall++;
+			const message = {
+				role: "assistant" as const,
+				content: [],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "error" as const,
+				errorStatus: 401,
+				errorMessage: "Invalid API key",
+				timestamp: Date.now(),
+			};
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "error", reason: "error", error: message });
+			});
+			return stream;
+		};
+
+		// key 失效:重连无意义,第一次 401 即暂停。
 		await session.prompt("start the work");
 		await session.waitForIdle();
-		expect(promptSpy).not.toHaveBeenCalled();
 		expect(providerCall).toBe(1);
-		expect(session.getGoalModeState()?.goal.status).toBe("active");
-
-		await session.prompt("retry");
-		await session.waitForIdle();
-		expect(promptSpy).not.toHaveBeenCalled();
-		expect(providerCall).toBe(2);
-		expect(session.getGoalModeState()?.goal.status).toBe("active");
+		expect(session.getGoalModeState()?.goal.status).toBe("paused");
 	});
 
 	it("todo reminder resumes work after an error-settled turn when todo.resumeAfterError is on", async () => {

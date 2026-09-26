@@ -5,6 +5,10 @@ import type { GoalModeState } from "../goals/state";
 
 /** 无进展续跑的放行上限:模型确认轮(纯文本)重发 nudge 的最大次数。 */
 const MAX_NO_PROGRESS_CONTINUATIONS = 2;
+/** 同一错误签名连续出现超过该次数即暂停 goal(用户新 prompt 自动 resume 后重新开始重连)。 */
+const MAX_SAME_ERROR_SETTLES = 10;
+/** 认证类失败(key 失效等):重连无意义,立即停止。 */
+const AUTH_ERROR_STATUSES: Record<number, true> = { 401: true, 403: true };
 
 /**
  * Session-layer goal continuation driver.
@@ -27,8 +31,10 @@ export class GoalContinuation {
 	#awaitingContinuationSettle = false;
 	/** Fingerprint of the last goal-continuation turn's tool activity. */
 	#previousActivity: string | undefined;
-	/** Consecutive error settles on an active goal; 2 triggers auto-pause (provider broken). */
-	#consecutiveErrorSettles = 0;
+	/** 同一错误签名连续出现的 error settle 次数;超过 MAX_SAME_ERROR_SETTLES 触发暂停。 */
+	#sameErrorStreak = 0;
+	/** 上一个 error settle 的错误签名(非 error settle 清零)。 */
+	#errorFingerprint: string | undefined;
 	/** Consecutive continuation turns that produced no new tool activity; bounded by MAX_NO_PROGRESS_CONTINUATIONS. */
 	#noProgressContinuations = 0;
 
@@ -52,8 +58,6 @@ export class GoalContinuation {
 			getPromptGeneration: () => number;
 			/** 同步的暂停请求标志:ESC/abort 已请求 pause 但状态还在异步提交队列里时,本 settle 不得 re-arm。 */
 			pauseRequested?: () => boolean;
-			/** 刚 settle 的轮次是否用户驱动:用户驱动期间连败计数不复利(见 error 分支)。 */
-			lastRunUserOrigin?: () => boolean;
 		},
 	) {}
 
@@ -86,40 +90,62 @@ export class GoalContinuation {
 			this.#awaitingContinuationSettle = false;
 			return false;
 		}
-		// 连续 error settle = provider 连接有问题(如聚合站 4xx/连接失败),
-		// 继续续跑只会空转(每圈一次失败请求,UI 一直"运行"但无产出)。
-		// 两连败即暂停 goal(与 ESC 语义一致);恢复用 /goal resume 或新消息。
-		// error settle 本身不提交续跑:失败请求之后的自动重试只会制造第二个
-		// error settle,让刚被新消息 resume 的 goal 在同一 prompt 周期内立刻
-		// 再被暂停(resume→pause 抖动)。goal 保持 active,等下一次成功 settle
-		// 或用户的新 prompt(经 agent_start 自动 resume)再驱动。
+		if (options.compactionOwned) return false;
+		if (this.host.continuationBlocked()) return false;
+		if (this.host.hasPendingAsyncWake()) return false;
+		// goal 运行期间 provider 错误不使会话停摆:重新提交续跑轮次持续重连,
+		// 直到 (a) 认证类失败(401/403,key 失效,重连无意义)或
+		// (b) 同一错误签名连续出现超过 MAX_SAME_ERROR_SETTLES 次。
+		// 两种情况都转 paused(与 ESC 语义一致):用户新 prompt 经 agent_start
+		// 自动 resume,重连循环重新开始(计数随暂停清零)。
+		// 节奏由 TurnRecovery 的轮内退避天然提供,不另加 backoff。
 		if (message.stopReason === "error") {
-			// 用户驱动的失败轮次不累积连败:重发 prompt 期间 provider 随时可能恢复,
-			// 让"重新发 prompt 继续工作"触发自动暂停会重现 resume→pause 死循环。
-			// 只有无用户介入的系统自驱轮次(注入链)的连续失败才累积到自动暂停。
-			// ponytail: agent.continue() 不改 lastPromptOrigin,紧随用户 prompt 的
-			// 注入轮次也读到 user——Fix A 之后 error settle 已无自驱链,该泄漏无实际危害。
-			if (this.host.lastRunUserOrigin?.()) this.#consecutiveErrorSettles = 0;
-			this.#consecutiveErrorSettles++;
-			if (this.#consecutiveErrorSettles >= 2) {
-				logger.warn("Goal auto-paused after repeated error settles", {
-					errors: this.#consecutiveErrorSettles,
-				});
-				// 清零:resume 之后必须重新累计两次失败才再次自动暂停,
-				// 否则计数残留会让用户刚 /goal resume 就因一次错误立刻再被暂停。
-				this.#consecutiveErrorSettles = 0;
+			const fingerprint = this.#errorFingerprintOf(message);
+			this.#sameErrorStreak = fingerprint === this.#errorFingerprint ? this.#sameErrorStreak + 1 : 1;
+			this.#errorFingerprint = fingerprint;
+			const authFailure = message.errorStatus !== undefined && AUTH_ERROR_STATUSES[message.errorStatus] === true;
+			if (authFailure || this.#sameErrorStreak > MAX_SAME_ERROR_SETTLES) {
+				logger.warn(
+					authFailure
+						? "Goal auto-paused: auth failure, reconnect would not help"
+						: "Goal auto-paused: same error repeated, reconnect budget exhausted",
+					{ errorStatus: message.errorStatus, consecutive: this.#sameErrorStreak },
+				);
+				this.#sameErrorStreak = 0;
+				this.#errorFingerprint = undefined;
 				this.#awaitingContinuationSettle = false;
 				void this.host.pauseGoal();
 				return false;
 			}
-			// 未达暂停阈值也不提交:让 error settle 本身停止驱动(见上方注释)。
-			return false;
+			// 重连:重新提交续跑轮次。走 settle 期宏任务延后提交,避开 agent 队列
+			// 排水竞态(与无进展 nudge 同一模式)。
+			this.#noProgressContinuations = 0;
+			this.#awaitingContinuationSettle = true;
+			const prompt = this.host.buildContinuationPrompt();
+			if (!prompt) {
+				this.#awaitingContinuationSettle = false;
+				return false;
+			}
+			void Bun.sleep(0).then(async () => {
+				if (this.host.getPromptGeneration() !== generationAtEntry) return;
+				if (this.host.pauseRequested?.()) return;
+				try {
+					await this.host.promptCustomMessage({
+						customType: "goal-continuation",
+						content: prompt,
+						display: false,
+						attribution: "agent",
+					});
+				} catch (error) {
+					this.#awaitingContinuationSettle = false;
+					logger.debug("Goal reconnection submission skipped", { error });
+				}
+			});
+			return true;
 		} else {
-			this.#consecutiveErrorSettles = 0;
+			this.#sameErrorStreak = 0;
+			this.#errorFingerprint = undefined;
 		}
-		if (options.compactionOwned) return false;
-		if (this.host.continuationBlocked()) return false;
-		if (this.host.hasPendingAsyncWake()) return false;
 		// Only judge suppression when this settle ends a turn WE submitted;
 		// otherwise (fresh user prompt etc.) the chain restarts cleanly.
 		if (this.#awaitingContinuationSettle) {
@@ -204,5 +230,11 @@ export class GoalContinuation {
 			}
 		}
 		return digests.join(":");
+	}
+	/** 错误签名:有 HTTP 状态时以状态为准,否则取错误信息前 80 字符(传输类失败没有状态码)。 */
+	#errorFingerprintOf(message: AssistantMessage): string {
+		return message.errorStatus !== undefined
+			? `status:${message.errorStatus}`
+			: `msg:${String(message.errorMessage ?? "").slice(0, 80)}`;
 	}
 }

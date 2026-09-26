@@ -34,7 +34,6 @@ function makeHarness(
 		buildContinuationPrompt?: (currentState: GoalModeState | undefined) => string | undefined;
 		continuationBlocked?: () => boolean;
 		pauseRequested?: () => boolean;
-		lastRunUserOrigin?: () => boolean;
 	},
 ) {
 	const submissions: PromptSubmission[] = [];
@@ -56,7 +55,6 @@ function makeHarness(
 			pauses++;
 			return Promise.resolve(currentState);
 		},
-		lastRunUserOrigin: options?.lastRunUserOrigin ?? (() => false),
 		buildContinuationPrompt: () =>
 			options?.buildContinuationPrompt
 				? options.buildContinuationPrompt(currentState)
@@ -432,23 +430,79 @@ describe("GoalContinuation", () => {
 		expect(h.submissions).toHaveLength(0);
 	});
 
-	it("keeps the counter from accumulating on user-origin error settles; consecutive system-origin settles still auto-pause", async () => {
-		const errorSettle = { role: "assistant" as const, content: [], stopReason: "error" as const } as never;
+	it("reconnects on error settles; auto-pauses only on auth failure or >10 consecutive same-code errors", async () => {
+		const error502 = {
+			role: "assistant" as const,
+			content: [],
+			stopReason: "error" as const,
+			errorStatus: 502,
+			errorMessage: "502 JSON error injected into SSE stream",
+		} as never;
+		/** 驱动者的延后重连提交恰好落在一个宏任务 tick(Bun.sleep(0));单 tick 冲刷,零真实时长。 */
+		const flushDeferred = async (): Promise<void> => {
+			await Bun.sleep(0);
+		};
 
-		// 用户驱动的连续失败:计数每次被重置,不触发自动暂停,也不提交续跑。
-		const userOrigin = true;
-		const h = makeHarness(makeState(), { lastRunUserOrigin: () => userOrigin });
-		expect(await h.driver.maybeContinue(errorSettle, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
-		expect(await h.driver.maybeContinue(errorSettle, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
-		expect(h.pauses).toBe(0);
-		expect(h.submissions).toHaveLength(0);
+		// 502 重连循环:持续重新提交续跑轮次,不暂停。
+		const h = makeHarness(makeState());
+		for (let i = 0; i < 10; i++) {
+			expect(await h.driver.maybeContinue(error502, NO_ACTIVITY, { compactionOwned: false })).toBe(true);
+			await flushDeferred();
+			expect(h.pauses).toBe(0);
+		}
+		expect(h.submissions).toHaveLength(10);
 
-		// 无用户介入的系统自驱链(注入轮次):独立从零累积,两次连续失败触发自动暂停
-		// (无人看守的空转保护保留)。
-		const h2 = makeHarness(makeState());
-		expect(await h2.driver.maybeContinue(errorSettle, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
-		expect(h2.pauses).toBe(0);
-		expect(await h2.driver.maybeContinue(errorSettle, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
-		expect(h2.pauses).toBe(1);
+		// 同码第 11 次连续出现:重连预算耗尽,自动暂停。
+		expect(await h.driver.maybeContinue(error502, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
+		expect(h.pauses).toBe(1);
+
+		// 不同错误码交替出现不累积:502/503 反复,不暂停。
+		const h3 = makeHarness(makeState());
+		const error503 = {
+			role: "assistant" as const,
+			content: [],
+			stopReason: "error" as const,
+			errorStatus: 503,
+			errorMessage: "503",
+		} as never;
+		for (let i = 0; i < 6; i++) {
+			expect(await h3.driver.maybeContinue(i % 2 ? error503 : error502, NO_ACTIVITY, { compactionOwned: false })).toBe(true);
+			await flushDeferred();
+		}
+		expect(h3.pauses).toBe(0);
+		expect(h3.submissions).toHaveLength(6);
+
+		// 认证失败(401):第一次即暂停,不重连。
+		const h4 = makeHarness(makeState());
+		const error401 = {
+			role: "assistant" as const,
+			content: [],
+			stopReason: "error" as const,
+			errorStatus: 401,
+			errorMessage: "Invalid API key",
+		} as never;
+		expect(await h4.driver.maybeContinue(error401, NO_ACTIVITY, { compactionOwned: false })).toBe(false);
+		expect(h4.pauses).toBe(1);
+		await flushDeferred();
+		expect(h4.submissions).toHaveLength(0);
+
+		// 成功 settle 清零连败:502 ×5 被一次成功打断后再来 502 ×5 仍不暂停。
+		const h5 = makeHarness(makeState());
+		const okSettle = {
+			role: "assistant" as const,
+			content: [{ type: "text", text: "done" }],
+			stopReason: "stop" as const,
+		} as never;
+		for (let i = 0; i < 5; i++) {
+			await h5.driver.maybeContinue(error502, NO_ACTIVITY, { compactionOwned: false });
+			await flushDeferred();
+		}
+		await h5.driver.maybeContinue(okSettle, NO_ACTIVITY, { compactionOwned: false });
+		await flushDeferred();
+		for (let i = 0; i < 5; i++) {
+			await h5.driver.maybeContinue(error502, NO_ACTIVITY, { compactionOwned: false });
+			await flushDeferred();
+		}
+		expect(h5.pauses).toBe(0);
 	});
 });
