@@ -231,7 +231,7 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		expect(continueSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("fires exactly one reminder per user pause when the agent only acknowledges", async () => {
+	it("escalates through the reminder cap when the agent only acknowledges", async () => {
 		// Each call to continue() mirrors what the bug-reported model did: emit another
 		// text-only stop ("paused at your instruction"), no tool calls in between.
 		vi.spyOn(session.agent, "continue").mockImplementation(async () => {
@@ -241,10 +241,8 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		emitTextOnlyStop();
 		await session.waitForIdle();
 
-		// With the bug: reminderAttempts === [1, 2, 3] within a single user pause.
-		// With the fix: the second `agent_end` is suppressed because no tool action ran
-		// between the first reminder and the agent's text-only ack.
-		expect(reminderAttempts).toEqual([1]);
+		// 无进度抑制:纯 ack 停止照常升级 1/3 -> 2/3 -> 3/3,cap 后链条终止。
+		expect(reminderAttempts).toEqual([1, 2, 3]);
 	});
 
 	it("re-escalates after the agent makes tool-level progress between stops", async () => {
@@ -258,7 +256,7 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 				emitTextOnlyStop();
 				return;
 			}
-			// Subsequent continuations are bare acks — they must not escalate further.
+			// Subsequent continuations are bare acks — they escalate to the cap.
 			emitTextOnlyStop();
 		});
 
@@ -266,8 +264,8 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		await session.waitForIdle();
 
 		// 1/3 fires, agent does work (progress refreshes the budget), 1/3 fires again,
-		// agent acks without acting → suppressed by the no-progress guard.
-		expect(reminderAttempts).toEqual([1, 1]);
+		// bare acks then escalate 2/3 -> 3/3; the chain ends at the cap.
+		expect(reminderAttempts).toEqual([1, 1, 2, 3]);
 	});
 
 	it("keeps a fresh reminder budget while the agent makes progress (runs past the cap)", async () => {
@@ -288,8 +286,8 @@ describe("AgentSession todo reminder self-continuation suppression", () => {
 		await session.waitForIdle();
 
 		// Five fresh attempts (progress reset the counter each time) instead of the
-		// old capped [1, 2, 3]; the final bare ack is suppressed by the no-progress guard.
-		expect(reminderAttempts).toEqual([1, 1, 1, 1, 1]);
+		// old capped [1, 2, 3]; the trailing bare acks escalate 2/3 -> 3/3 to the cap.
+		expect(reminderAttempts).toEqual([1, 1, 1, 1, 1, 2, 3]);
 	});
 
 	it("keeps the cap when only read-only tools progress (no budget refresh)", async () => {
