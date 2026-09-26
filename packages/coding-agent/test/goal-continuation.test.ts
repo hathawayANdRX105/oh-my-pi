@@ -466,7 +466,9 @@ describe("GoalContinuation", () => {
 			errorMessage: "503",
 		} as never;
 		for (let i = 0; i < 6; i++) {
-			expect(await h3.driver.maybeContinue(i % 2 ? error503 : error502, NO_ACTIVITY, { compactionOwned: false })).toBe(true);
+			expect(
+				await h3.driver.maybeContinue(i % 2 ? error503 : error502, NO_ACTIVITY, { compactionOwned: false }),
+			).toBe(true);
 			await flushDeferred();
 		}
 		expect(h3.pauses).toBe(0);
