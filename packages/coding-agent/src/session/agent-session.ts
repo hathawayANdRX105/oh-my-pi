@@ -8383,8 +8383,12 @@ export class AgentSession {
 			}
 			this.abortBash();
 			this.abortEval();
-			const postPromptDrain = this.#cancelPostPromptTasks();
+			// ESC/中断:同步置位 pause flag。中断 settle 与已排队的延后续跑提交会在
+			// onTaskAborted(waitForIdle 之后)落地前读取标志;晚置位让重连漏过 ESC,
+			// 随后 agent_start 自动 resume 把循环重新拉起来。
+			this.#goalRuntime.requestPauseSync();
 			this.agent.abort(options?.reason);
+			const postPromptDrain = this.#cancelPostPromptTasks();
 			await postPromptDrain;
 			await this.agent.waitForIdle();
 			// `/compact` disconnects the agent subscription until its finally block.

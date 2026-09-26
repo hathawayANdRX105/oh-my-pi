@@ -138,6 +138,16 @@ export class GoalRuntime {
 		return this.#pauseRequested;
 	}
 
+	/**
+	 * onTaskAborted 的同步半区:abort() 在 waitForIdle 之前必须置位,
+	 * 中断 settle(error/aborted)与已排队的延后提交会在 onTaskAborted 落地前读标志,
+	 * 晚置位正是 ESC 被"重连→agent_start 自动 resume"抵消的竞态窗口。
+	 */
+	requestPauseSync(): void {
+		const state = this.#host.getState();
+		if (state?.enabled && state.goal.status === "active") this.#pauseRequested = true;
+	}
+
 	get snapshot(): GoalRuntimeSnapshot {
 		return {
 			turnSnapshot: this.#turnSnapshot
