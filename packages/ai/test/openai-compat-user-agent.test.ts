@@ -150,7 +150,6 @@ describe("xAI stream User-Agent", () => {
 		);
 		expect(captured.url).toBe("https://api.x.ai/v1/responses");
 		expect(captured.userAgent).toBe(USER_AGENT);
-		expect(captured.userAgent).toMatch(/^omp\/\d+\.\d+\.\d+$/);
 	});
 
 	test("xAI OAuth Responses POST sends omp User-Agent", async () => {

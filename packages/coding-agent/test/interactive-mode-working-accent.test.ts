@@ -64,6 +64,7 @@ async function createHarness(sessionName: string): Promise<Harness> {
 		thinkingLevel: undefined,
 		titleGenerationSignal: new AbortController().signal,
 		notifyTitleGenerationStart: () => undefined,
+		setGoalContinuationBlocker: () => undefined,
 	} as unknown as AgentSession;
 	const mode = new InteractiveMode(session, "test");
 	harness = { mode, sessionManager, tempDir };
