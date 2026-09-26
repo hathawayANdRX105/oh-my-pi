@@ -223,13 +223,17 @@ jobs:
       steps:
          - uses: actions/checkout@v4
 
-         # ---- PR path: latest release addons from npm ----
+         # ---- PR path: release addons from npm, pinned to the fork base ----
+         # @latest tracks upstream releases (e.g. 18.3.x) whose native ABI lags
+         # ahead of this fork's 18.2.8-based TS tree: skew breaks native-shape
+         # tests (urlSchemes field, extractInlineSloppyRegions semantics).
+         # Bump when the fork publishes its own native addons.
          - name: Fetch release native addons (npm)
            if: github.event_name == 'pull_request'
            shell: bash
            run: |
               set -euo pipefail
-              tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@latest dist.tarball)"
+              tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@18.2.8 dist.tarball)"
               echo "Fetching $tarball"
               curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
               mkdir -p bazel-bin/natives-linux-x64-baseline bazel-bin/natives-linux-x64-modern
