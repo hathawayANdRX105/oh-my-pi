@@ -12,11 +12,13 @@ import taskCompleteDescription from "../prompts/tools/task-complete.md" with { t
  * continues instead. The tool itself is stateless: the guard reads the
  * toolResult's presence from the settle path, so nothing lands in the
  * session's write path.
+ *
+ * A sole, successful marker also ENDS the run: the session aborts the loop with
+ * the terminal-tool-result reason, so the model never buys another provider turn
+ * to restate the answer it already wrote before the call.
  */
 
-const taskCompleteSchema = type({
-	"reason?": type("string").describe("why you are calling: done, need_input, or blocked"),
-}).describe("no required arguments; the marker itself is the signal");
+const taskCompleteSchema = type({}).describe("no arguments; the marker itself is the signal");
 
 export interface TaskCompleteDetails {
 	/** True when the marker was accepted (always, unless schema-level failure). */

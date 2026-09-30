@@ -6,4 +6,6 @@ Call this tool when exactly one of these is true:
 - You need clarification from the user before continuing (missing information, ambiguous requirement, decision only the user can make).
 - You are blocked or stuck and need the user's help to continue.
 
-Calling it ends your turn and returns control to the user. Do not call it while meaningful work remains — a plain text stop is treated as "not finished" and the run continues.
+The run ends at this tool's result: there is no follow-up turn, and anything you write after the call is never delivered. Your final reply to the user is the assistant text you write BEFORE this call, not a tool argument. State your result, evidence, and any blocking detail as that text, then make the call the last action of the turn — alone, never batched with other tool calls.
+
+Do not call it while meaningful work remains — a plain text stop is treated as "not finished" and the run continues.

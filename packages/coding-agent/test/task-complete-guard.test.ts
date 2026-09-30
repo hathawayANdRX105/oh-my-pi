@@ -1,24 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { createTools, TaskCompleteTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 /**
  * Task completion guard: while the `task_complete` marker tool is active, a
  * text-only stop without the marker is not terminal — the session nudges and
- * continues (capped); the marker (or the cap) ends the run. Provider-error
- * recovery stays on the goal-continuation machinery and is unaffected.
+ * continues (capped); the marker (or the cap) ends the run. A sole successful
+ * marker also ends the run at its tool result, so the model never buys a
+ * follow-up turn to restate what it already said. Provider-error recovery
+ * stays on the goal-continuation machinery and is unaffected.
  */
 describe("task completion guard", () => {
 	let tempDir: TempDir;
 	let session: AgentSession;
 	let toolSession: ToolSession;
+	let notePath: string;
 	let providerCall = 0;
 
 	beforeEach(async () => {
@@ -42,6 +46,8 @@ describe("task completion guard", () => {
 		const toolRegistry = new Map<string, Tool>(initialTools.map(tool => [tool.name, tool] as const));
 		toolSession = bootstrapToolSession;
 
+		notePath = tempDir.join("note.txt");
+		await Bun.write(notePath, "sibling payload");
 		session = new AgentSession({
 			agent: new Agent({
 				initialState: { model, systemPrompt: ["Test"], tools: initialTools, messages: [] },
@@ -60,22 +66,40 @@ describe("task completion guard", () => {
 		resetSettingsForTest();
 	});
 
-	/** Assistant response: bare text stop, or a task_complete toolCall turn. */
+	/** Assistant response: bare text stop, a marker, or a marker batched with a sibling call. */
 	function armStream(
 		respond: (callIndex: number) => {
 			text?: string;
 			marker?: boolean;
+			batchedMarker?: boolean;
 			stopReason?: "stop" | "toolUse";
 		},
 	): void {
 		session.agent.streamFn = () => {
 			const n = providerCall++;
 			const spec = respond(n);
+			const markerCall = {
+				type: "toolCall" as const,
+				id: `call_marker_${n}`,
+				name: "task_complete",
+				arguments: {},
+			};
+			const content = spec.batchedMarker
+				? [
+						{
+							type: "toolCall" as const,
+							id: `call_sibling_${n}`,
+							name: "read",
+							arguments: { path: notePath },
+						},
+						markerCall,
+					]
+				: spec.marker
+					? [markerCall]
+					: [{ type: "text" as const, text: spec.text ?? `bare stop ${n}` }];
 			const message = {
 				role: "assistant" as const,
-				content: spec.marker
-					? [{ type: "toolCall" as const, id: `call_marker_${n}`, name: "task_complete", arguments: {} }]
-					: [{ type: "text" as const, text: spec.text ?? `bare stop ${n}` }],
+				content,
 				api: "anthropic-messages" as const,
 				provider: "anthropic" as const,
 				model: "claude-sonnet-4-5",
@@ -87,7 +111,8 @@ describe("task completion guard", () => {
 					totalTokens: 2,
 					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 				},
-				stopReason: spec.marker ? ("toolUse" as const) : (spec.stopReason ?? ("stop" as const)),
+				stopReason:
+					spec.marker || spec.batchedMarker ? ("toolUse" as const) : (spec.stopReason ?? ("stop" as const)),
 				timestamp: Date.now(),
 			};
 			const stream = new AssistantMessageEventStream();
@@ -114,17 +139,45 @@ describe("task completion guard", () => {
 		expect(providerCall).toBe(4);
 		expect(nudgeCount()).toBe(3);
 	});
-	it("terminates the run when the model calls task_complete", async () => {
-		// 真实模型行为:标记一次,随后以文本收束(不再重复调标记)。
+	it("ends the run at the marker, without buying a follow-up turn", async () => {
+		// The model states its result and closes with the marker in one turn; the
+		// loop must not spend another provider call asking it to restate that.
 		armStream(n => (n === 0 ? { text: "working" } : n === 1 ? { marker: true } : { text: "all done" }));
 
 		await session.prompt("do the work");
 		await session.waitForIdle();
 
-		// n=0 bare stop → one nudge; n=1 marker turn (tool executes); n=2 text
-		// stop settles marked → terminal without further continuations.
-		expect(providerCall).toBe(3);
+		// n=0 bare stop → one nudge; n=1 marker turn ends the run at the tool result,
+		// so the trailing text turn never happens.
+		expect(providerCall).toBe(2);
 		expect(nudgeCount()).toBe(1);
+		expect(
+			session.agent.state.messages.some(
+				message => message.role === "assistant" && JSON.stringify(message.content).includes("all done"),
+			),
+		).toBe(false);
+		expect(
+			session.agent.state.messages.some(
+				message => message.role === "toolResult" && message.toolName === "task_complete" && !message.isError,
+			),
+		).toBe(true);
+	});
+
+	it("keeps running when the marker is batched with a sibling call", async () => {
+		// A batched marker is not terminal: the terminal abort would skip the
+		// not-yet-started sibling and drop its result, so the run continues and
+		// settles on the next stop.
+		armStream(n => (n === 0 ? { text: "working" } : n === 1 ? { batchedMarker: true } : { text: "all done" }));
+
+		await session.prompt("do the work");
+		await session.waitForIdle();
+
+		// n=0 bare stop → one nudge; n=1 batched marker keeps the loop alive and
+		// still delivers the sibling result; n=2 settles on the marked stop.
+		expect(providerCall).toBe(3);
+		expect(
+			session.agent.state.messages.some(message => message.role === "toolResult" && message.toolName === "read"),
+		).toBe(true);
 	});
 
 	it("stays silent when the guard is disabled", async () => {
@@ -138,7 +191,7 @@ describe("task completion guard", () => {
 		expect(nudgeCount()).toBe(0);
 	});
 
-	it("hands normal-stop continuation to the guard, not the goal driver, when both are active", async () => {
+	it("hands bare stops to the goal driver when a goal is active", async () => {
 		session.settings.set("goal.enabled", true);
 		await session.goalRuntime.createGoal({ objective: "Ship the release" });
 		armStream(() => ({ text: "working" }));
@@ -147,10 +200,40 @@ describe("task completion guard", () => {
 		await session.prompt("do the work");
 		await session.waitForIdle();
 
-		// Guard owns the bare-stop continuation: no goal-continuation submission,
-		// capped guard nudges instead.
-		expect(promptSpy.mock.calls.filter(call => call[0]?.customType === "goal-continuation")).toHaveLength(0);
-		expect(nudgeCount()).toBe(3);
-		expect(providerCall).toBe(4);
+		// The goal driver owns the bare stop and re-arms with the goal prompt; the
+		// guard stands down so the two budgets cannot keep resetting each other.
+		// (Exact turn count is bounded by other stop-time machinery; the contract
+		// here is that a goal-mode stop is resumed by the driver, not dropped.)
+		const continuations = promptSpy.mock.calls.filter(call => call[0]?.customType === "goal-continuation");
+		expect(continuations.length).toBeGreaterThan(0);
+		expect(JSON.stringify(continuations[0]?.[0])).toContain("Ship the release");
+		expect(nudgeCount()).toBe(0);
+	});
+
+	it("keeps the goal driver off a marker turn", async () => {
+		session.settings.set("goal.enabled", true);
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		armStream(n => (n === 0 ? { text: "working" } : { marker: true }));
+		const promptSpy = vi.spyOn(session, "promptCustomMessage");
+
+		await session.prompt("do the work");
+		await session.waitForIdle();
+
+		// One goal continuation, then the marker ends the run: an explicit
+		// "I'm done" must not be re-armed as another continuation turn.
+		const continuations = promptSpy.mock.calls.filter(call => call[0]?.customType === "goal-continuation");
+		expect(continuations).toHaveLength(1);
+	});
+
+	it("exposes no content-carrying parameter on the marker", () => {
+		// The user's final reply is the assistant text written before the marker
+		// call. A declared parameter invites the model to move that reply into
+		// the call (invisible once the run ends at the tool result), so the
+		// marker declares none, and the wire object stays closed so strict
+		// providers reject a legacy `reason` field instead of letting it
+		// masquerade as the reply.
+		const wire = toolWireSchema(new TaskCompleteTool());
+		expect(wire.properties).toEqual({});
+		expect(wire.additionalProperties).toBe(false);
 	});
 });
