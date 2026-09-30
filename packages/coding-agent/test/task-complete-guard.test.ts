@@ -6,6 +6,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { cfgTaskCompleteEnabled } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgGoalEnabled } from "@oh-my-pi/pi-coding-agent/goals/settings";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createTools, TaskCompleteTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -187,6 +188,22 @@ describe("task completion guard", () => {
 		await session.waitForIdle();
 
 		expect(providerCall).toBe(1);
+		expect(nudgeCount()).toBe(0);
+	});
+
+	it("stands down when an active goal owns continuation", async () => {
+		// With an active goal, stop semantics belong to the goal driver: the guard
+		// must not stack a second nudge budget on top of it. The guard contract
+		// is that it emits no task_complete nudge — continuation (if any) is the
+		// goal driver's, not the guard's.
+		cfgGoalEnabled.set(session.settings, true);
+		await session.goalRuntime.createGoal({ objective: "Ship the release" });
+		armStream(() => ({ text: "working" }));
+
+		await session.prompt("do the work");
+		await session.waitForIdle();
+
+		// The guard stood down: no task_complete nudge was injected by it.
 		expect(nudgeCount()).toBe(0);
 	});
 
