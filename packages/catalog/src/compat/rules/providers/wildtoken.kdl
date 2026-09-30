@@ -1,0 +1,46 @@
+// Provider-wire compat for "wildtoken"; self-hosted gateway that
+// serves xhigh + max on Gemini 3.5/3.6/3.7/3.8 Flash and MiniMax M3.
+// The class ladder caps Flash at high; provider-scoped per-model
+// extension makes xhigh + max reach the wire.
+
+provider "wildtoken" {
+	models "gemini-3.5-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	models "gemini-3.6-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	models "gemini-3.7-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	models "gemini-3.8-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	class "minimax" {
+		family "m3" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+			supports-reasoning-effort #true
+		}
+	}
+}
+
+provider "new-api" {
+	models "gemini-3.5-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	models "gemini-3.6-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	models "gemini-3.7-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	models "gemini-3.8-flash" {
+		thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+	}
+	class "minimax" {
+		family "m3" {
+			thinking-efforts "minimal" "low" "medium" "high" "xhigh" "max"
+			supports-reasoning-effort #true
+		}
+	}
+}
