@@ -207,9 +207,10 @@ function operationFor(params: LaunchParams, session: ToolSession): DaemonOperati
 			return { op: "restart", name: requiredName(params) };
 		case "describe":
 			return { op: "describe", name: requiredName(params) };
+		default:
+			throw new ToolError(`Unsupported launch operation: ${params.op}`);
 	}
 }
-
 function daemonLabel(daemon: DaemonSnapshot): string {
 	const pid = daemon.pid === undefined ? "" : ` pid=${daemon.pid}`;
 	const exit = daemon.exitCode === undefined ? "" : ` exit=${daemon.exitCode}`;
@@ -270,9 +271,10 @@ function toolContent(result: DaemonRpcResult, params: LaunchParams): string {
 				`Cwd: ${shortenPath(result.spec.cwd)}`,
 				`PTY: ${result.spec.pty}; restart=${result.spec.restart}; persist=${result.spec.persist}; detached=${result.spec.detached}`,
 			].join("\n");
+		default:
+			throw new ToolError(`Internal daemon result ${result.op} is not tool-visible`);
 	}
 }
-
 /** Resolve display rows while keeping legacy raw replay outside the client process. */
 export async function renderLaunchLogTerminalRows(
 	result: Extract<DaemonRpcResult, { op: "logs" }>,
@@ -312,10 +314,10 @@ async function toolDetails(result: DaemonRpcResult, params: LaunchParams): Promi
 			return { op: "describe", daemon: result.daemon, spec: result.spec };
 		case "ping":
 		case "shutdown":
+		default:
 			throw new ToolError(`Internal daemon result ${result.op} is not tool-visible`);
 	}
 }
-
 /** Run one broker operation for the calling session's project. */
 export async function executeLaunch(
 	session: ToolSession,

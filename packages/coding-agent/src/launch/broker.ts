@@ -37,7 +37,7 @@ import {
 } from "./protocol";
 import { resolveDaemonSpawnOptions } from "./spawn-options";
 import { renderTerminalOutput } from "./terminal-output";
-
+import { SessionHost } from "./session-host";
 const DEFAULT_IDLE_GRACE_MS = 3_000;
 const MAX_REQUEST_BYTES = 1024 * 1024;
 const MAX_LOG_BYTES = 25 * 1024 * 1024;
@@ -432,7 +432,7 @@ class DaemonBroker {
 	#server: net.Server | undefined;
 	#idleTimer: NodeJS.Timeout | undefined;
 	#shuttingDown = false;
-
+	readonly #sessionHost: SessionHost;
 	constructor(
 		projectDir: string,
 		runtimeDir: string,
@@ -446,6 +446,7 @@ class DaemonBroker {
 		this.#token = token;
 		this.#idleGraceMs = idleGraceMs;
 		this.#restartBackoffBaseMs = restartBackoffBaseMs;
+		this.#sessionHost = new SessionHost({ projectDir, runtimeDir });
 	}
 
 	async run(): Promise<void> {
@@ -491,7 +492,7 @@ class DaemonBroker {
 			await promise;
 		}
 		if (process.platform !== "win32") await fs.rm(this.#endpoint, { force: true });
-		this.#finished.resolve();
+		await this.#sessionHost.shutdown();
 	}
 
 	#accept(socket: net.Socket): void {
@@ -527,6 +528,7 @@ class DaemonBroker {
 			this.#sockets.delete(socket);
 			if (!authenticated) return;
 			this.#clients.delete(socket);
+			this.#sessionHost.disconnect(socket);
 			this.#scheduleIdleShutdown();
 			for (const [owner, registration] of this.#ownerSockets) {
 				if (registration.socket === socket) this.#ownerSockets.delete(owner);
@@ -614,7 +616,7 @@ class DaemonBroker {
 					if (registration?.subscriptionId === request.completionSubscriptionId) this.#ownerSockets.delete(owner);
 				}
 			}
-			const result = await this.#dispatch(request.operation);
+			const result = await this.#dispatch(request.operation, socket);
 			socket.write(`${JSON.stringify({ id, ok: true, result })}\n`);
 			if (request.operation.op === "shutdown") setTimeout(() => void this.shutdown(), 10);
 		} catch (error) {
@@ -623,7 +625,7 @@ class DaemonBroker {
 		}
 	}
 
-	async #dispatch(operation: DaemonOperation): Promise<DaemonRpcResult> {
+	async #dispatch(operation: DaemonOperation, socket: net.Socket): Promise<DaemonRpcResult> {
 		switch (operation.op) {
 			case "ping":
 				return { op: "ping", projectDir: this.#projectDir };
@@ -645,9 +647,7 @@ class DaemonBroker {
 				// Final guard: coerce any residual typed-array (Float32Array from
 				// the embed provider) or scalar row into a plain number array so
 				// the wire payload parses as `number[][]`.
-				const matrix = vectors.map(row =>
-					Array.isArray(row) ? row : (Array.from(row as ArrayLike<number>)),
-				);
+				const matrix = vectors.map(row => (Array.isArray(row) ? row : Array.from(row as ArrayLike<number>)));
 				return { op: "embed", vectors: matrix };
 			}
 			case "mcp-ensure":
@@ -683,6 +683,8 @@ class DaemonBroker {
 			}
 			case "shutdown":
 				return { op: "shutdown" };
+			case "session":
+				return { op: "session", result: await this.#sessionHost.handleOperation(socket, operation.request) };
 		}
 	}
 
@@ -1476,7 +1478,8 @@ class DaemonBroker {
 						if ("pendingCompletions" in decoded && Array.isArray(decoded.pendingCompletions)) {
 							return decoded.pendingCompletions.map(value => {
 								const message = parseDaemonWireMessage(value);
-								if (!("event" in message)) throw new Error("Pending daemon completion is not an event");
+								if (!("event" in message) || message.event !== "daemon-completed")
+									throw new Error("Pending daemon completion is not an event");
 								return message;
 							});
 						}
@@ -1536,7 +1539,7 @@ class DaemonBroker {
 	}
 
 	#scheduleIdleShutdown(): void {
-		if (this.#shuttingDown || this.#clients.size > 0) return;
+		if (this.#shuttingDown || this.#clients.size > 0 || this.#sessionHost.hasActiveWork) return;
 		clearTimeout(this.#idleTimer);
 		this.#idleTimer = setTimeout(() => {
 			this.#idleTimer = undefined;

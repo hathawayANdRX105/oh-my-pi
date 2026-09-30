@@ -34,6 +34,7 @@ describe("launch broker protocol compatibility", () => {
 			request: async () => legacyResult,
 			close() {},
 			onCompletion: () => () => {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -63,6 +64,7 @@ describe("launch broker protocol compatibility", () => {
 			request: async () => legacyResult,
 			onCompletion: () => () => {},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -119,6 +121,7 @@ describe("launch broker protocol compatibility", () => {
 				} as const;
 			},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -156,6 +159,7 @@ describe("launch broker protocol compatibility", () => {
 					state: "running",
 				}) as const,
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -204,6 +208,7 @@ describe("launch broker protocol compatibility", () => {
 				} as const;
 			},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -246,6 +251,7 @@ describe("launch broker protocol compatibility", () => {
 				return { op: "wait", daemon, timedOut: false } as const;
 			},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -272,6 +278,7 @@ describe("launch broker protocol compatibility", () => {
 			},
 			request: async () => ({ op: "list", daemons: [] }) as const,
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -325,6 +332,7 @@ describe("launch broker protocol compatibility", () => {
 			},
 			request: async () => ({ op: "start", daemon: completion.daemon, readyTimedOut: false }) as const,
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -361,6 +369,7 @@ describe("launch broker protocol compatibility", () => {
 				throw new Error("Daemon broker request aborted");
 			},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -393,6 +402,7 @@ describe("launch broker protocol compatibility", () => {
 				return { op: "list", daemons: [] };
 			},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 
@@ -443,6 +453,7 @@ describe("launch broker protocol compatibility", () => {
 				};
 			},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 		const session = {
@@ -471,6 +482,7 @@ describe("launch broker protocol compatibility", () => {
 				throw new daemonClient.DaemonBrokerRejectedError("daemon not found");
 			},
 			close() {},
+			onSessionEvent: () => () => {},
 		} satisfies DaemonBrokerClient;
 		vi.spyOn(daemonClient, "daemonClientForProject").mockResolvedValue(client);
 

@@ -5,11 +5,16 @@ import {
 	type DaemonSpec,
 	type DaemonSnapshot,
 } from "@oh-my-pi/pi-tui/tools/hub";
+import {
+	parseSessionOperation,
+	type SessionEventNotification,
+	type SessionOperation,
+	type SessionOperationResult,
+} from "./session-protocol";
 /**
  * Cross-process daemon broker protocol shared by the tool, client, and broker.
  */
 export { DAEMON_BROKER_WORKER_ARG } from "../cli/worker-selectors";
-
 /** Fixed dimensions negotiated with every supervised PTY. */
 export const DAEMON_PTY_COLUMNS = 120;
 export const DAEMON_PTY_ROWS = 40;
@@ -52,6 +57,7 @@ export type DaemonOperation =
 	| { op: "stop"; name: string; timeoutMs: number }
 	| { op: "restart"; name: string }
 	| { op: "describe"; name: string }
+	| { op: "session"; request: SessionOperation }
 	| { op: "shutdown" };
 
 /** Typed broker result decoded before it reaches tool code. */
@@ -86,6 +92,7 @@ export type DaemonRpcResult =
 	| { op: "stop"; daemon: DaemonSnapshot }
 	| { op: "restart"; daemon: DaemonSnapshot }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
+	| { op: "session"; result: SessionOperationResult }
 	| { op: "shutdown" };
 
 /** Authenticated request envelope used by socket clients. */
@@ -113,7 +120,7 @@ export interface DaemonCompletionNotification {
 	daemon: DaemonSnapshot;
 }
 
-export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification;
+export type DaemonWireMessage = DaemonWireResponse | DaemonCompletionNotification | SessionEventNotification;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -316,6 +323,20 @@ export function parseDaemonWireResponse(value: unknown): DaemonWireResponse {
 /** Decode one broker response or unsolicited completion notification. */
 export function parseDaemonWireMessage(value: unknown): DaemonWireMessage {
 	const source = record(value, "daemon message");
+	if (source.event === "session-event") {
+		return {
+			event: "session-event",
+			notification: {
+				op: "event",
+				event:
+					source.notification && typeof source.notification === "object" && "event" in source.notification
+						? (source.notification.event as SessionEventNotification["notification"]["event"])
+						: (() => {
+								throw new Error("session notification is invalid");
+							})(),
+			},
+		};
+	}
 	if (source.event === "daemon-completed") {
 		return {
 			event: "daemon-completed",
@@ -414,6 +435,8 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 		case "restart":
 		case "describe":
 			return { op, name: stringValue(source.name, "operation.name") };
+		case "session":
+			return { op, request: parseSessionOperation(source.request) };
 		default:
 			throw new Error(`Unknown daemon operation: ${op}`);
 	}
@@ -491,5 +514,7 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			};
 		case "shutdown":
 			return { op: "shutdown" };
+		case "session":
+			return { op: "session", result: source as SessionOperationResult };
 	}
 }

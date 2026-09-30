@@ -17,12 +17,12 @@ import { type IrcMessage, type IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools
  */
 
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { currentSessionRuntimeContext } from "../session/runtime-context";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 import type { CustomMessage } from "../session/messages";
-
 interface IrcWaiter {
 	from?: string;
 	resolve: (msg: IrcMessage) => void;
@@ -50,6 +50,8 @@ export class IrcBus {
 	static #global: IrcBus | undefined;
 
 	static global(): IrcBus {
+		const scoped = currentSessionRuntimeContext()?.ircBus;
+		if (scoped) return scoped;
 		if (!IrcBus.#global) {
 			IrcBus.#global = new IrcBus();
 		}

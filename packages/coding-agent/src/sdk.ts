@@ -602,6 +602,8 @@ export interface CreateAgentSessionOptions {
 	agentName?: string;
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
+	/** Optional lifecycle manager bound to the supplied registry. Default: global lifecycle. */
+	agentLifecycleManager?: AgentLifecycleManager;
 	/**
 	 * Registry generation authorized for this creation. `null` requires the id
 	 * to be absent; an AgentRef allows a parked revival to reuse only that ref.
@@ -1780,6 +1782,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
+	const lifecycle = options.agentLifecycleManager ?? AgentLifecycleManager.global();
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
 	const resolvedAgentDisplayName = options.agentDisplayName ?? agentKind;
 	let registeredAgentRef: AgentRef | undefined;
@@ -1797,7 +1800,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const ref = registeredAgentRef;
 		if (!ref || agentRegistry.get(resolvedAgentId) !== ref) return;
 		if (ref.status === "parked" || (ref.status === "aborted" && !ref.session)) return;
-		if (AgentLifecycleManager.global().isParking(resolvedAgentId, ref)) return;
+		if (lifecycle.isParking(resolvedAgentId, ref)) return;
 		agentRegistry.unregister(resolvedAgentId, ref);
 	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
@@ -1886,7 +1889,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// onto a caller-supplied registry would report a cancel while releasing an
 			// unrelated global ref. With no lifecycle, hub cancel falls back to
 			// dispose + unregister on the session's own registry.
-			agentLifecycle: options.agentRegistry ? undefined : () => AgentLifecycleManager.global(),
+			agentLifecycle: options.agentRegistry && !options.agentLifecycleManager ? undefined : () => lifecycle,
 			getSessionSpawns: () => options.spawns ?? "*",
 			getSessionAgents: () => session?.getSessionAgents() ?? [],
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
@@ -3452,8 +3455,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// The reclaim is gated by the lifecycle owner and only touches the
 			// registry it manages; the corpse's transcript stays at history://.
 			const stale = agentRegistry.get(resolvedAgentId);
-			const lifecycle = AgentLifecycleManager.global();
-			if (stale && lifecycle.manages(agentRegistry) && (await lifecycle.reclaimDeadCorpse(resolvedAgentId, stale))) {
+			const reclaimLifecycle = options.agentLifecycleManager ?? AgentLifecycleManager.global();
+			if (
+				stale &&
+				reclaimLifecycle.manages(agentRegistry) &&
+				(await reclaimLifecycle.reclaimDeadCorpse(resolvedAgentId, stale))
+			) {
 				registeredAgentRef = agentRegistry.registerIfAvailable(registrationInput, null);
 			}
 		}
@@ -4150,7 +4157,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							getActiveModelString,
 						};
 						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
-						await AgentLifecycleManager.global().dispose();
+						await lifecycle.dispose();
 					}
 					await originalDispose();
 				} finally {

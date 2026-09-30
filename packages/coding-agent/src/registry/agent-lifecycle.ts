@@ -23,6 +23,7 @@
 import * as fs from "node:fs/promises";
 import { logger, untilAborted } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
+import { currentSessionRuntimeContext } from "../session/runtime-context";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import {
 	type AgentRef,
@@ -93,6 +94,8 @@ export class AgentLifecycleManager {
 	static #global: AgentLifecycleManager | undefined;
 
 	static global(): AgentLifecycleManager {
+		const scoped = currentSessionRuntimeContext()?.agentLifecycleManager;
+		if (scoped) return scoped;
 		const current = AgentLifecycleManager.#global;
 		if (current) {
 			// The manager captures its registry at construction and subscribes to

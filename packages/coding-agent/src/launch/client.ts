@@ -18,6 +18,7 @@ import {
 	parseDaemonRpcResult,
 	parseDaemonWireMessage,
 } from "./protocol";
+import type { SessionEvent } from "./session-protocol";
 import { resolveDaemonSpawnOptions } from "./spawn-options";
 
 const CONNECT_TIMEOUT_MS = 10_000;
@@ -55,7 +56,7 @@ export interface DaemonBrokerClient {
 		owner: string,
 		sink: (notification: DaemonCompletionNotification) => Promise<void> | void,
 	): (options?: DaemonCompletionUnregisterOptions) => void;
-	/** Canonical project directory or synthetic directory identifying a global scope. */
+	onSessionEvent(sink: (event: SessionEvent) => void): () => void;
 	readonly projectDir: string;
 	request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult>;
 	close(): void;
@@ -161,6 +162,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #completionReplays = new Set<string>();
 	readonly #inFlightCompletionIds = new Set<string>();
 	readonly #completionSubscriptionId = crypto.randomUUID();
+	readonly #sessionEventSinks = new Set<(event: SessionEvent) => void>();
 	#socket: net.Socket | undefined;
 	#connectPromise: Promise<void> | undefined;
 	#buffer = "";
@@ -175,12 +177,16 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#idleGraceMs = options.idleGraceMs;
 	}
 
+	onSessionEvent(sink: (event: SessionEvent) => void): () => void {
+		this.#sessionEventSinks.add(sink);
+		return () => this.#sessionEventSinks.delete(sink);
+	}
+
 	async request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
 		if (this.#closed) throw new Error("Daemon broker client is closed");
 		if (signal?.aborted) throw new Error("Daemon broker request aborted");
 		await this.#connect();
 		const socket = this.#socket;
-		if (!socket || socket.destroyed) throw new Error("Daemon broker socket is unavailable");
 
 		const completionUnsubscribes = [...this.#completionUnsubscribes];
 		const completionReplays = [...this.#completionReplays];
@@ -204,6 +210,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			pending.removeAbort = () => signal.removeEventListener("abort", abort);
 		}
 		this.#pending.set(id, pending);
+		if (!socket) throw new Error("Daemon broker socket is unavailable");
 		socket.write(
 			`${JSON.stringify({
 				id,
@@ -391,6 +398,10 @@ class SocketDaemonClient implements DaemonBrokerClient {
 				continue;
 			}
 			if ("event" in message) {
+				if (message.event === "session-event") {
+					for (const sink of this.#sessionEventSinks) sink(message.notification.event);
+					continue;
+				}
 				void this.#deliverCompletion(message);
 				continue;
 			}
