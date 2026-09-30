@@ -882,6 +882,13 @@ export class AgentSession {
 	 */
 	#yieldTerminationPending = false;
 	#synchronouslyTerminatedYieldToolCallIds = new Set<string>();
+	/**
+	 * Sticky across an in-flight prompt run: a successful `task_complete` marker
+	 * ended the run at the tool result, so the settle pass must keep running its
+	 * stop-time tail even though the final assistant message carries the marker
+	 * tool call. Cleared before every new prompt turn.
+	 */
+	#taskCompleteTerminated = false;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	#hindsightSessionState: HindsightSessionState | undefined = undefined;
 	readonly #memory: SessionMemory;
@@ -891,6 +898,7 @@ export class AgentSession {
 		this.#recovery.resetForNewPrompt();
 		this.#maintenance.resetForNewPrompt();
 		this.#yieldTerminationPending = false;
+		this.#taskCompleteTerminated = false;
 	}
 
 	#acquirePowerAssertion(): void {
@@ -1424,9 +1432,6 @@ export class AgentSession {
 			buildContinuationPrompt: () => this.#goalRuntime.buildContinuationPrompt(),
 			getPromptGeneration: () => this.#promptGeneration,
 			pauseRequested: () => this.#goalRuntime.pauseRequested,
-			taskCompleteGuardActive: () =>
-				this.settings.get("taskComplete.enabled") === true &&
-				this.agent.state.tools.some(tool => tool.name === "task_complete"),
 		});
 		this.#modelMentions = new ModelMentionRegistry({
 			sessionManager: this.sessionManager,
@@ -3845,7 +3850,10 @@ export class AgentSession {
 			// Mid-run sync is handled separately via #takeMidRunTodoNudge so a long
 			// tool-use loop still gets prodded to keep the live HUD honest (issue #3651).
 			const hasToolCalls = msg.content.some(content => content.type === "toolCall");
-			if (hasToolCalls) {
+			// A marker-terminated run settles on the assistant message that carries
+			// the marker call. The marker IS the model's own stop decision, so the
+			// stop-time tail (todo reconciliation, session_stop hooks) still runs.
+			if (hasToolCalls && !this.#taskCompleteTerminated) {
 				await emitAgentEndNotification();
 				return;
 			}
@@ -4127,6 +4135,20 @@ export class AgentSession {
 		}
 		// 只有真正持有标记工具(顶层默认;子代理有自己的完成流)的会话启用 guard。
 		if (!this.agent.state.tools.some(tool => tool.name === "task_complete")) return false;
+		// goal 激活时停止语义归 goal 驱动(见 GoalContinuation):它带 goal 上下文
+		// 续跑,且 `task_complete` 标记轮是它唯一会让路的停止。两套语义在同一个
+		// 裸文本停止上交替会互相重置对方的预算,run 永远收敛不了。
+		const goalState = this.#goalModeState;
+		// 驱动被宿主模式阻断(plan review / loop mode)时,guard 仍要接手:那时
+		// 没有任何东西会把这个裸文本停止接回去。
+		if (
+			goalState?.enabled === true &&
+			goalState.goal.status === "active" &&
+			goalState.mode !== "exiting" &&
+			!this.#goalContinuationBlocker()
+		) {
+			return false;
+		}
 		if (this.#taskCompleteContinuations >= TASK_COMPLETE_MAX_CONTINUATIONS) return false;
 		this.#taskCompleteContinuations++;
 		const nudge: AgentMessage = {
@@ -4281,6 +4303,15 @@ export class AgentSession {
 			this.#markTerminalYieldToolCall(ctx.toolCall.id);
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+		}
+		if (
+			this.#isTerminalTaskCompleteResult({
+				toolName: ctx.toolCall.name,
+				isError: ctx.isError,
+				assistantMessage: ctx.assistantMessage,
+			})
+		) {
+			this.#terminateOnTaskCompleteMarker();
 		}
 		return this.#ttsr.afterToolCall(ctx);
 	}
@@ -8578,6 +8609,7 @@ export class AgentSession {
 			this.#todo.resetCycle();
 			this.#taskCompleteMarked = false;
 			this.#taskCompleteContinuations = 0;
+			this.#taskCompleteTerminated = false;
 			this.#planReferenceSent = false;
 			this.#planReferencePath = "local://PLAN.md";
 			this.#advisors.resetSessionState();
@@ -8945,6 +8977,36 @@ export class AgentSession {
 	#markTerminalYieldToolCall(toolCallId: string): void {
 		this.#lastSuccessfulYieldToolCallId = toolCallId;
 		this.#yieldTerminationPending = true;
+	}
+
+	/**
+	 * A successful `task_complete` marker is the run's last output: aborting with
+	 * the terminal-tool-result reason stops the loop before it spends one more
+	 * provider turn restating what the model just said.
+	 *
+	 * A marker batched with sibling calls is NOT terminal — the abort skips
+	 * not-yet-started siblings and would drop their results. Such a turn keeps the
+	 * ordinary continuation and settles on the following text stop instead.
+	 */
+	#isTerminalTaskCompleteResult(ctx: {
+		toolName: string;
+		isError?: boolean;
+		assistantMessage: AssistantMessage;
+	}): boolean {
+		if (this.#agentKind === "sub") return false;
+		if (this.settings.get("taskComplete.enabled") !== true) return false;
+		if (ctx.toolName !== "task_complete" || ctx.isError === true) return false;
+		return ctx.assistantMessage.content.filter(content => content.type === "toolCall").length === 1;
+	}
+
+	#terminateOnTaskCompleteMarker(): void {
+		if (this.#taskCompleteTerminated) return;
+		this.#taskCompleteTerminated = true;
+		// The run ends here, so the guard's settle-on-marked flag has nothing left
+		// to discharge. Left set, a later stop in the same prompt cycle (todo
+		// reminder, session_stop continuation) would settle as if it were marked.
+		this.#taskCompleteMarked = false;
+		this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 	}
 
 	#assistantMessageHasSuccessfulYieldToolCall(assistantMessage: AssistantMessage, toolCallId: string): boolean {

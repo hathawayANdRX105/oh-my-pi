@@ -96,6 +96,22 @@ describe("GoalContinuation", () => {
 		expect(h.submissions[0].content).toContain("Ship the feature");
 	});
 
+	it("does not re-arm on a task_complete marker turn", async () => {
+		const h = makeHarness(makeState());
+		const scheduled = await h.driver.maybeContinue(
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "c1", name: "task_complete", arguments: {} }],
+			} as never,
+			NO_ACTIVITY,
+			{ compactionOwned: false },
+		);
+		// The model judged the run done / needs input / blocked: that is the stop
+		// it asked for, and re-arming it would loop a deliberate ending forever.
+		expect(scheduled).toBe(false);
+		expect(h.submissions).toHaveLength(0);
+	});
+
 	it("skips when no goal is active", async () => {
 		const h = makeHarness(undefined);
 		const scheduled = await h.driver.maybeContinue({ role: "assistant", content: [] } as never, NO_ACTIVITY, {
