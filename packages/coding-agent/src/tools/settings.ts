@@ -365,6 +365,20 @@ export const cfgTodoRemindersMax = register({
 	},
 });
 
+// Task completion guard
+export const cfgTaskCompleteEnabled = register({
+	id: "taskComplete.enabled",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Task Complete Guard",
+		description:
+			"Stop runs on the model's explicit task_complete marker: a text-only stop without the marker nudges the run to continue (capped), provider-error continuation is unaffected",
+	},
+});
+
 export const cfgTodoEager = register({
 	id: "todo.eager",
 	type: "enum",

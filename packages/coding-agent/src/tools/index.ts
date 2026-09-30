@@ -70,6 +70,7 @@ import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
 import type { PlanProposalHandler } from "./resolve";
 import { SecurityScanTool } from "./security-scan";
+import { TaskCompleteTool } from "./task-complete";
 import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TodoTool } from "./todo";
@@ -90,6 +91,7 @@ import {
 	cfgGrepEnabled,
 	cfgLaunchEnabled,
 	cfgSecurityEnabled,
+	cfgTaskCompleteEnabled,
 	cfgTodoEnabled,
 	cfgToolsXdev,
 	cfgWebSearchEnabled,
@@ -153,6 +155,7 @@ export type {
 	SubmitReviewDetails,
 } from "@oh-my-pi/pi-tui/tools/task";
 export * from "./security-scan";
+export * from "./task-complete";
 export * from "./think";
 export * from "./todo";
 export * from "./tts";
@@ -583,6 +586,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	task: s => TaskTool.create(s),
 	wait: s => new WaitTool(s),
 	todo: s => new TodoTool(s),
+	task_complete: () => new TaskCompleteTool(),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
 	memory_edit: MemoryEditTool.createIf,
@@ -755,6 +759,8 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		if (name === "ida") return cfgIdaAvailable.get(session.settings);
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && cfgTodoEnabled.get(session.settings);
+		if (name === "task_complete")
+			return cfgTaskCompleteEnabled.get(session.settings) && ((session.taskDepth ?? 0) === 0 || requestedTools !== undefined);
 		if (name === "glob") return cfgGlobEnabled.get(session.settings);
 		if (name === "grep") return cfgGrepEnabled.get(session.settings);
 		if (name === "find") return isFindEnabled(session);

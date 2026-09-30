@@ -187,6 +187,7 @@ import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with {
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import anthropicUsageWrapUpPrompt from "../prompts/system/anthropic-usage-wrap-up.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
+import taskCompleteNudgePrompt from "../prompts/system/task-complete-nudge.md" with { type: "text" };
 import checkpointActiveNoticeTemplate from "../prompts/system/checkpoint-active-notice.md" with { type: "text" };
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
@@ -423,6 +424,8 @@ export * from "./agent-session-types";
 export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
+/** 无 task_complete 标记的裸文本停止,nudge 续跑次数上限(per-prompt 复位)。 */
+const TASK_COMPLETE_MAX_CONTINUATIONS = 3;
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
@@ -479,6 +482,7 @@ import {
 	cfgRatchetEnabled,
 	cfgDevAutoqa,
 	cfgDevAutoqaConsent,
+	cfgTaskCompleteEnabled,
 	cfgTodoEnabled,
 	cfgToolsApproval,
 } from "../tools/settings";
@@ -1016,7 +1020,16 @@ export class AgentSession implements SettingsScope {
 	 * Cleared before every new prompt turn so the next turn evaluates cleanly.
 	 */
 	#yieldTerminationPending = false;
+	#taskCompleteMarked = false;
+	#taskCompleteContinuations = 0;
 	#synchronouslyTerminatedYieldToolCallIds = new Set<string>();
+	/**
+	 * Sticky across an in-flight prompt run: a successful `task_complete` marker
+	 * ended the run at the tool result, so the settle pass must keep running its
+	 * stop-time tail even though the final assistant message carries the marker
+	 * tool call. Cleared before every new prompt turn.
+	 */
+	#taskCompleteTerminated = false;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	readonly #cacheWarmer: CacheWarmer | undefined;
 	#hindsightSessionState: HindsightSessionState | undefined = undefined;
@@ -1027,6 +1040,7 @@ export class AgentSession implements SettingsScope {
 		this.#recovery.resetForNewPrompt();
 		this.#maintenance.resetForNewPrompt();
 		this.#yieldTerminationPending = false;
+		this.#taskCompleteTerminated = false;
 	}
 
 	#acquirePowerAssertion(): void {
@@ -3445,6 +3459,11 @@ export class AgentSession implements SettingsScope {
 		// not progress an agent could mark done.
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			this.#todo.onToolResult(event.message.toolName, event.message.isError);
+			// task_complete 标记:成功结果即"模型判定任务完成/需要输入/受阻",
+			// settle 路径据此终止(裸停止不再触发 guard nudge)。
+			if (event.message.toolName === "task_complete" && !event.message.isError) {
+				this.#taskCompleteMarked = true;
+			}
 		}
 		// Track the settled assistant turn synchronously as well: agent_end
 		// maintenance reads `#lastAssistantMessage`, and when a turn's events all
@@ -4133,7 +4152,10 @@ export class AgentSession implements SettingsScope {
 			// Mid-run sync is handled separately via #takeMidRunTodoNudge so a long
 			// tool-use loop still gets prodded to keep the live HUD honest (issue #3651).
 			const hasToolCalls = msg.content.some(content => content.type === "toolCall");
-			if (hasToolCalls) {
+			// A marker-terminated run settles on the assistant message that carries
+			// the marker call. The marker IS the model's own stop decision, so the
+			// stop-time tail (todo reconciliation, session_stop hooks) still runs.
+			if (hasToolCalls && !this.#taskCompleteTerminated) {
 				await emitAgentEndNotification();
 				return;
 			}
@@ -4158,6 +4180,11 @@ export class AgentSession implements SettingsScope {
 				}
 				const planModeContinuationScheduled = await this.#enforcePlanModeDecisionAtSettle();
 				if (planModeContinuationScheduled) {
+					await emitAgentEndNotification({ willContinue: true });
+					return;
+				}
+				const taskCompleteContinuationScheduled = this.#checkTaskCompleteGuard(msg);
+				if (taskCompleteContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
@@ -4318,6 +4345,50 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	/**
+	 * Task completion guard: while this session carries the task_complete marker,
+	 * a text-only stop without the marker is not terminal — nudge and continue
+	 * (capped). Model-judged stop is deliberately separate from provider-error
+	 * recovery, which stays on the goal-continuation / retry machinery.
+	 */
+	#checkTaskCompleteGuard(msg: AssistantMessage): boolean {
+		if (cfgTaskCompleteEnabled.get(this.settings) !== true) return false;
+		if (msg.stopReason !== "stop") return false;
+		if (this.#taskCompleteMarked) {
+			// 模型主动标记(完成/需要输入/受阻):本轮终止。
+			this.#taskCompleteMarked = false;
+			this.#taskCompleteContinuations = 0;
+			return false;
+		}
+		// 只有真正持有标记工具(顶层默认;子代理有自己的完成流)的会话启用 guard。
+		if (!this.agent.state.tools.some(tool => tool.name === "task_complete")) return false;
+		// goal 激活时停止语义归 goal 驱动:它带 goal 上下文续跑,裸文本停止由它接手,
+		// guard 不再叠 nudge,两套预算互不重置。
+		const goalState = this.#goalModeState;
+		if (goalState?.enabled === true && goalState.goal.status === "active" && goalState.mode !== "exiting") {
+			return false;
+		}
+		if (this.#taskCompleteContinuations >= TASK_COMPLETE_MAX_CONTINUATIONS) return false;
+		this.#taskCompleteContinuations++;
+		const nudge: AgentMessage = {
+			role: "developer",
+			content: [
+				{
+					type: "text",
+					text: prompt.render(taskCompleteNudgePrompt, {
+						attempt: this.#taskCompleteContinuations,
+						max: TASK_COMPLETE_MAX_CONTINUATIONS,
+					}),
+				},
+			],
+			attribution: "agent",
+			timestamp: Date.now(),
+		};
+		this.agent.appendMessage(nudge);
+		this.sessionManager.appendMessage(nudge);
+		this.#scheduleAgentContinue({ source: "task-complete-guard", generation: this.#promptGeneration });
+		return true;
+	}
 	#scheduleAgentContinue(options: ScheduledAgentContinueOptions): void {
 		const request: ScheduledAgentContinueRequest = {
 			schedulerToken: ++this.#agentContinueSchedulerToken,
@@ -4521,7 +4592,45 @@ export class AgentSession implements SettingsScope {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
+		if (
+			this.#isTerminalTaskCompleteResult({
+				toolName: ctx.toolCall.name,
+				isError: ctx.isError,
+				assistantMessage: ctx.assistantMessage,
+			})
+		) {
+			this.#terminateOnTaskCompleteMarker();
+		}
 		return this.#ttsr.afterToolCall(ctx);
+	}
+	/**
+	 * A successful `task_complete` marker is the run's last output: aborting with
+	 * the terminal-tool-result reason stops the loop before it spends one more
+	 * provider turn restating what the model just said.
+	 *
+	 * A marker batched with sibling calls is NOT terminal — the abort skips
+	 * not-yet-started siblings and would drop their results. Such a turn keeps
+	 * the ordinary continuation and settles on the following text stop instead.
+	 */
+	#isTerminalTaskCompleteResult(ctx: {
+		toolName: string;
+		isError?: boolean;
+		assistantMessage: AssistantMessage;
+	}): boolean {
+		if (this.#agentKind === "sub") return false;
+		if (cfgTaskCompleteEnabled.get(this.settings) !== true) return false;
+		if (ctx.toolName !== "task_complete" || ctx.isError === true) return false;
+		return ctx.assistantMessage.content.filter(content => content.type === "toolCall").length === 1;
+	}
+
+	#terminateOnTaskCompleteMarker(): void {
+		if (this.#taskCompleteTerminated) return;
+		this.#taskCompleteTerminated = true;
+		// The run ends here, so the guard's settle-on-marked flag has nothing left
+		// to discharge. Left set, a later stop in the same prompt cycle (todo
+		// reminder, session_stop continuation) would settle as if it were marked.
+		this.#taskCompleteMarked = false;
+		this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
@@ -5232,6 +5341,7 @@ export class AgentSession implements SettingsScope {
 	}
 
 	async #releaseOwnedBrowserTabs(ownerId: string | undefined): Promise<void> {
+		if (!ownerId) return;
 		let released = 0;
 		try {
 			released = await withTimeout(
@@ -7396,6 +7506,9 @@ export class AgentSession implements SettingsScope {
 			this.#irc.flushPending();
 
 			this.#todo.resetCycle();
+			// 新用户 prompt = 新的 guard 窗口:标记与 nudge 计数随 todo cycle 一起复位。
+			this.#taskCompleteMarked = false;
+			this.#taskCompleteContinuations = 0;
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
 
@@ -9160,6 +9273,10 @@ export class AgentSession implements SettingsScope {
 			this.sessionManager.appendServiceTierChange(this.#models.serviceTierEntry());
 
 			this.#todo.resetCycle();
+			// /new = 全新会话:guard 三个标志一并复位,不带旧会话的标记/续跑预算进新会话。
+			this.#taskCompleteMarked = false;
+			this.#taskCompleteContinuations = 0;
+			this.#taskCompleteTerminated = false;
 			this.#planReferenceSent = false;
 			this.#planReferencePath = "local://PLAN.md";
 			this.#advisors.resetSessionState();
