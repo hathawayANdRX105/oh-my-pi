@@ -2713,13 +2713,7 @@ mod tests {
 			!linked.join(".wt").exists(),
 			"new worktree must not carry sibling worktrees or itself"
 		);
-		assert_eq!(
-			fs::read_to_string(temp.path().join(".wt/old/marker")).unwrap(),
-			"old\n"
-		);
-		assert_eq!(
-			fs::read_to_string(temp.path().join(".wt/old/nested")).unwrap(),
-			"nested\n"
-		);
+		assert_eq!(fs::read_to_string(temp.path().join(".wt/old/marker")).unwrap(), "old\n");
+		assert_eq!(fs::read_to_string(temp.path().join(".wt/old/nested")).unwrap(), "nested\n");
 	}
 }

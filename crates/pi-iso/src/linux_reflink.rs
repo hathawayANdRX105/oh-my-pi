@@ -113,14 +113,16 @@ mod imp {
 	/// in-source destination would otherwise be re-mirrored into itself on
 	/// every level until the disk fills (151 nested repo copies observed in
 	/// the wild). The guard skips any entry that *is* the destination.
-	fn reflink_into(lower: &Path, merged: &Path, skip: Option<&[&std::ffi::OsStr]>) -> IsoResult<()> {
+	fn reflink_into(
+		lower: &Path,
+		merged: &Path,
+		skip: Option<&[&std::ffi::OsStr]>,
+	) -> IsoResult<()> {
 		let lower = canonical_existing_dir(lower)?;
 		let merged_abs = if merged.is_absolute() {
 			merged.to_path_buf()
 		} else {
-			std::env::current_dir()
-				.map(|cwd| cwd.join(merged))
-				.unwrap_or_else(|_| merged.to_path_buf())
+			std::env::current_dir().map_or_else(|_| merged.to_path_buf(), |cwd| cwd.join(merged))
 		};
 		// Reject before prepare_destination: with merged == lower, prepare
 		// would delete the source itself.
@@ -367,10 +369,7 @@ mod tests {
 		}
 
 		assert_eq!(fs::read_to_string(merged.join("a.txt")).unwrap(), "one\n");
-		assert_eq!(
-			fs::read_to_string(merged.join(".wt/keep.txt")).unwrap(),
-			"sibling\n"
-		);
+		assert_eq!(fs::read_to_string(merged.join(".wt/keep.txt")).unwrap(), "sibling\n");
 		assert!(
 			!merged.join(".wt/session-daemon").exists(),
 			"destination must not be cloned into itself"
@@ -389,10 +388,7 @@ mod tests {
 
 		let err = imp::clone_tree(&lower, &lower, &[])
 			.expect_err("destination equal to source must be rejected");
-		assert!(
-			err.to_string().contains("must differ"),
-			"unexpected error: {err}"
-		);
+		assert!(err.to_string().contains("must differ"), "unexpected error: {err}");
 		assert_eq!(
 			fs::read_to_string(lower.join("a.txt")).unwrap(),
 			"one\n",
