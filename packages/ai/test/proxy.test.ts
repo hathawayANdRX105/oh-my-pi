@@ -4,6 +4,7 @@ import * as AIError from "@oh-my-pi/pi-ai/error";
 import type { FetchImpl } from "@oh-my-pi/pi-ai/types";
 import {
 	__resetGlobalProxyFetch,
+	__resetProxyCache,
 	connectProxiedSocket,
 	getProxyForProvider,
 	getProxyForUrl,
@@ -98,11 +99,16 @@ function proxyEnvKeys(): Set<string> {
 }
 
 // Snapshot + clear every proxy-related env var so each test starts clean and
-// leaves nothing behind for later files. Provider-specific tests use unique
-// provider ids so the module-level resolver cache can never cross-contaminate.
+// leaves nothing behind for later files. The resolver's module-level cache is
+// reset per test for the same reason.
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
+	// The resolver memoizes per provider for the process lifetime; other
+	// test files may have resolved a real provider id (e.g.
+	// "github-copilot") against a different env state, so each test here
+	// starts from an empty cache.
+	__resetProxyCache();
 	saved = {};
 	for (const key of proxyEnvKeys()) {
 		saved[key] = Bun.env[key];

@@ -571,6 +571,11 @@ describe("openai-codex Responses Lite and client metadata wire format", () => {
 				sessionId: "compaction-lifecycle-session",
 				providerSessionState,
 				codexCompaction,
+				// The test asserts client_metadata wire format across fan-out
+				// calls; pin the SSE transport so the fetch mock stays hermetic
+				// (the default WebSocket transport bypasses it and needs the
+				// real network).
+				preferWebsockets: false,
 			}).result();
 		};
 		const preTurn: CodexCompactionRequestContext = {

@@ -6240,6 +6240,10 @@ describe("openai-codex streaming", () => {
 			apiKey: token,
 			sessionId: "turn-state-session",
 			providerSessionState,
+			// The test asserts SSE request/response-header behavior; pin the SSE
+			// transport so the default WebSocket transport (which bypasses the
+			// fetch mock and needs the real network) cannot take over.
+			preferWebsockets: false,
 		};
 
 		const first = await streamOpenAICodexResponses(model, { systemPrompt, messages: [firstUser] }, options).result();
@@ -6618,6 +6622,10 @@ describe("openai-codex streaming", () => {
 			apiKey: createCodexTestToken(),
 			sessionId: "metadata-turn-state-session",
 			providerSessionState,
+			// The test asserts SSE response-header behavior; pin the SSE transport
+			// so the default WebSocket transport (which bypasses the fetch mock
+			// and needs the real network) cannot take over.
+			preferWebsockets: false,
 		};
 
 		const first = await streamOpenAICodexResponses(model, { systemPrompt, messages: [firstUser] }, options).result();
