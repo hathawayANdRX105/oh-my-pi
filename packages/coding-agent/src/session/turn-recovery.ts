@@ -30,6 +30,7 @@ import { formatModelStringWithRouting, resolveModelOverride } from "../config/mo
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
+import incompleteStreamResumeTemplate from "../prompts/system/incomplete-stream-resume.md" with { type: "text" };
 import malformedFunctionCallRetryTemplate from "../prompts/system/malformed-function-call-retry.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
@@ -70,6 +71,10 @@ import { sameMessageContent, sessionMessagePersistenceKey } from "./turn-persist
 import { classifyUnexpectedStop, isUnexpectedStopCandidate } from "./unexpected-stop-classifier";
 
 const THINKING_LOOP_REDIRECT_TYPE = "thinking-loop-redirect";
+/** Hidden resume notice appended when a preserved premature-close text-only
+ * turn needs to be continued. Agent.continue() rejects an assistant tail, so
+ * the tail must be a custom message that tells the model to finish. */
+const INCOMPLETE_STREAM_RESUME_TYPE = "incomplete-stream-resume";
 const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
 const EMPTY_STOP_MAX_RETRIES = 3;
@@ -1383,6 +1388,10 @@ export class TurnRecovery {
 	 * assistant/tool-result pair stays in context so continuation cannot replay
 	 * completed side effects; synthetic results tell the next turn that an
 	 * unexecuted call must be reissued.
+	 *
+	 * Premature-close text-only turns (no emitted tool calls) are also eligible:
+	 * there are no side effects to preserve, so they classify as `stream-stall`
+	 * and are resumed with a hidden resume notice instead of being replayed.
 	 */
 	classifyResolvedInterruptedToolTurn(message: AssistantMessage): "reasonless-abort" | "stream-stall" | undefined {
 		const id = this.#classifyRetryMessage(message);
@@ -1431,7 +1440,13 @@ export class TurnRecovery {
 			if (block.type !== "toolCall") continue;
 			resolvedToolCallIds.push(block.id);
 		}
-		if (resolvedToolCallIds.length === 0) return undefined;
+		if (resolvedToolCallIds.length === 0) {
+			// Premature-close on a text-only turn needs no resolved tool calls:
+			// there is nothing to re-issue and the preserved partial is safe to
+			// continue. All other variants still require at least one tool call.
+			if (prematureClose) return "stream-stall";
+			return undefined;
+		}
 
 		const messages = this.#host.agent.state.messages;
 		let assistantIndex = -1;
@@ -2576,6 +2591,12 @@ export class TurnRecovery {
 		// continue() accepts — and never once a newer prompt owns the session.
 		if (!preserveFailedTurn && this.#host.promptGeneration() === generation) {
 			this.#stripFailedAssistantTail();
+		} else if (preserveFailedTurn) {
+			// A preserved text-only turn has no tool results for continue() to
+			// pair with, so the assistant tail would fail locally. Give the
+			// scheduled continue a custom tail and instruct the model to finish
+			// the interrupted response instead of restarting it.
+			this.#maybeInjectIncompleteStreamResume(message, preserveFailedTurn);
 		}
 
 		// Retry via continue() outside the agent_end event callback chain. A
@@ -2658,6 +2679,38 @@ export class TurnRecovery {
 		this.#host.sessionManager.appendCustomMessageEntry(
 			THINKING_LOOP_REDIRECT_TYPE,
 			thinkingLoopRedirectTemplate,
+			false,
+			undefined,
+			"agent",
+		);
+	}
+
+	/**
+	 * Inject a hidden resume notice when a preserved premature-close text-only
+	 * turn is about to be continued. Agent.continue() rejects an assistant tail
+	 * with no unpaired runnable tool calls, so a preserved text-only turn would
+	 * fail locally before a provider request is made. The notice supplies a
+	 * custom tail that continue() accepts, and tells the model to finish the
+	 * interrupted response instead of replaying the truncated output. Tool-call
+	 * preserves already end in synthetic results that continue() accepts, so
+	 * they are left untouched. No persistent registration is required: hidden
+	 * custom messages are rendered generically and the type is not special-cased
+	 * by any TUI/export filter (no static ignore list gates on customType).
+	 */
+	#maybeInjectIncompleteStreamResume(message: AssistantMessage, preserveFailedTurn: boolean): void {
+		if (!preserveFailedTurn) return;
+		if (message.content.some(block => block.type === "toolCall")) return;
+		this.#host.agent.appendMessage({
+			role: "custom",
+			customType: INCOMPLETE_STREAM_RESUME_TYPE,
+			content: incompleteStreamResumeTemplate,
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		this.#host.sessionManager.appendCustomMessageEntry(
+			INCOMPLETE_STREAM_RESUME_TYPE,
+			incompleteStreamResumeTemplate,
 			false,
 			undefined,
 			"agent",

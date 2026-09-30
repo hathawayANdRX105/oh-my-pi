@@ -980,6 +980,41 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			]);
 			expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
 		});
+
+		it("continues a text-only premature close without any tool calls", () => {
+			const message = gatewayMessage([{ type: "text", text: "partial answer" }], completionsClose);
+			expect(recoveryForClose(message, []).classifyResolvedInterruptedToolTurn(message)).toBe("stream-stall");
+		});
+
+		it("does not continue a premature close with a non-retriable error classification", () => {
+			const message = gatewayMessage([{ type: "text", text: "partial answer" }], completionsClose);
+			message.errorId = AIError.create(AIError.Flag.ContentBlocked);
+			expect(recoveryForClose(message, []).classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
+		});
+
+		it("does not continue a thinking-loop stream-stall text-only turn", () => {
+			const message = gatewayMessage([{ type: "text", text: "partial" }], "stream stall detected");
+			expect(recoveryForClose(message, []).classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
+		});
+
+		it("still continues a premature close whose tool calls all have synthetic results", () => {
+			const message = gatewayMessage(
+				[{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "pwd" } }],
+				completionsClose,
+			);
+			const recovery = recoveryForClose(message, [
+				{
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "Tool call was not executed." }],
+					isError: true,
+					details: { __synthetic: true, source: "assistant_stop_error", executed: false },
+					timestamp: Date.now(),
+				},
+			]);
+			expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBe("stream-stall");
+		});
 	});
 
 	it("maps an ephemeral fallback hop to the default chain instead of a shared later-listed role", () => {
