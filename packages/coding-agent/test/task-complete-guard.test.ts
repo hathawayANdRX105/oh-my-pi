@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
@@ -22,7 +22,6 @@ import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 describe("task completion guard", () => {
 	let tempDir: TempDir;
 	let session: AgentSession;
-	let toolSession: ToolSession;
 	let notePath: string;
 	let providerCall = 0;
 
@@ -45,7 +44,6 @@ describe("task completion guard", () => {
 		const bootstrapToolSession = { cwd: tempDir.path(), settings } as unknown as ToolSession;
 		const initialTools = await createTools(bootstrapToolSession, ["read", "task_complete"]);
 		const toolRegistry = new Map<string, Tool>(initialTools.map(tool => [tool.name, tool] as const));
-		toolSession = bootstrapToolSession;
 
 		notePath = tempDir.join("note.txt");
 		await Bun.write(notePath, "sibling payload");

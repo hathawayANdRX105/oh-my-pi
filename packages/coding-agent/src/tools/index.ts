@@ -760,7 +760,10 @@ export async function resolveBuiltinToolPlan(session: ToolSession, toolNames?: s
 		if (name === "todo")
 			return (!includeYield || session.prewalkArmed === true) && cfgTodoEnabled.get(session.settings);
 		if (name === "task_complete")
-			return cfgTaskCompleteEnabled.get(session.settings) && ((session.taskDepth ?? 0) === 0 || requestedTools !== undefined);
+			return (
+				cfgTaskCompleteEnabled.get(session.settings) &&
+				((session.taskDepth ?? 0) === 0 || requestedTools !== undefined)
+			);
 		if (name === "glob") return cfgGlobEnabled.get(session.settings);
 		if (name === "grep") return cfgGrepEnabled.get(session.settings);
 		if (name === "find") return isFindEnabled(session);
