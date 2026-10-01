@@ -6,6 +6,8 @@ Call this tool when exactly one of these is true:
 - You need clarification from the user before continuing (missing information, ambiguous requirement, decision only the user can make).
 - You are blocked or stuck and need the user's help to continue.
 
-The run ends at this tool's result: there is no follow-up turn, and anything you write after the call is never delivered. Your final reply to the user is the assistant text you write BEFORE this call, not a tool argument. State your result, evidence, and any blocking detail as that text, then make the call the last action of the turn — alone, never batched with other tool calls.
+Your reply is the assistant text you write, never a tool argument. Write the report — what you did, what you verified, what is left, anything blocking — as normal assistant text, then make this call the last action of that same turn. Do not batch it with other tool calls.
+
+The marker is a hidden signal: the call and its result are stripped from your context, and the run ends as soon as you call it. You will not see any acknowledgement, and nothing you write after the call is ever delivered. So a turn that calls the marker without text first leaves the user with no report — write the text first, every time.
 
 Do not call it while meaningful work remains — a plain text stop is treated as "not finished" and the run continues.

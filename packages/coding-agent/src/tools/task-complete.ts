@@ -13,9 +13,16 @@ import taskCompleteDescription from "../prompts/tools/task-complete.md" with { t
  * toolResult's presence from the settle path, so nothing lands in the
  * session's write path.
  *
- * A sole, successful marker also ENDS the run: the session aborts the loop with
- * the terminal-tool-result reason, so the model never buys another provider turn
- * to restate the answer it already wrote before the call.
+ * The marker is invisible to the model: `convertToLlm` drops both the call and
+ * its result from provider-bound history, so the tool never re-teaches the
+ * model that the call is what ends a reply. It stays in the persisted session,
+ * so the transcript still shows it.
+ *
+ * A marker that arrives on a turn carrying user-facing text also ENDS the run:
+ * the session aborts the loop with the terminal-tool-result reason, so the
+ * model never buys another provider turn to restate the answer it already
+ * wrote. A marker with no text leaves the run alive, so the model still gets
+ * its report turn.
  */
 
 const taskCompleteSchema = type({}).describe("no arguments; the marker itself is the signal");

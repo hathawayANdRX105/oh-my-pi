@@ -460,3 +460,87 @@ describe("wrapSteeringForModel", () => {
 		expect(getUserText(wrapped[1])).toContain("second steer");
 	});
 });
+
+describe("convertToLlm task_complete marker", () => {
+	const markerResult = (): AgentMessage => ({
+		role: "toolResult",
+		toolCallId: "call_marker",
+		toolName: "task_complete",
+		content: [{ type: "text", text: "Task marked complete. Control returns to the user." }],
+		isError: false,
+		timestamp: 3,
+	});
+
+	it("keeps the marker out of the provider request entirely", () => {
+		// The marker is a runtime stop signal. Its result text tells the model that
+		// the call itself ends the reply, which is why models fire it instead of
+		// writing their report — so neither half may reach provider history.
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "do the work", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [{ type: "toolCall", id: "call_marker", name: "task_complete", arguments: {} }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: 2,
+			},
+			markerResult(),
+			{ role: "user", content: "next request", timestamp: 4 },
+		];
+
+		const converted = convertToLlm(messages);
+		const serialized = JSON.stringify(converted);
+
+		expect(serialized).not.toContain("task_complete");
+		expect(serialized).not.toContain("Task marked complete");
+		// The marker-only assistant turn leaves nothing behind, so it must not
+		// survive as an empty assistant message.
+		expect(converted.filter(message => message.role === "assistant")).toHaveLength(0);
+		expect(converted.map(message => message.role)).toEqual(["user", "user"]);
+	});
+
+	it("keeps the model's report text while dropping just the marker call", () => {
+		// The report the model wrote alongside the marker is the user's only output;
+		// stripping the marker must not swallow it.
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "do the work", timestamp: 1 },
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Shipped the release and verified the tag." },
+					{ type: "toolCall", id: "call_marker", name: "task_complete", arguments: {} },
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "toolUse",
+				timestamp: 2,
+			},
+			markerResult(),
+		];
+
+		const converted = convertToLlm(messages);
+		const serialized = JSON.stringify(converted);
+
+		expect(serialized).not.toContain("task_complete");
+		expect(serialized).toContain("Shipped the release and verified the tag.");
+	});
+});

@@ -375,7 +375,7 @@ export const cfgTaskCompleteEnabled = register({
 		group: "Available Tools",
 		label: "Task Complete Guard",
 		description:
-			"Stop runs on the model's explicit task_complete marker: a text-only stop without the marker nudges the run to continue (capped), provider-error continuation is unaffected",
+			"Stop runs on the model's explicit task_complete marker (a hidden signal, kept out of model context): a text-only stop without the marker nudges the run to continue (capped), provider-error continuation is unaffected",
 	},
 });
 
