@@ -99,3 +99,4 @@ todo/*
 !todo/handoff/
 !todo/handoff/**
 .codegraph/
+.testless/
