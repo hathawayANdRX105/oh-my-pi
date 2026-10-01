@@ -220,6 +220,7 @@ import { isLowSignalTitleInput } from "../tiny/text";
 import { shutdownTinyTitleClient } from "../tiny/title-client";
 import type { ImageAttachmentEntry, ToolSession } from "../tools";
 import { resolveApproval } from "../tools/approval";
+import { TASK_COMPLETE_TOOL_NAME } from "../tools/builtin-names";
 import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { type AskToolInput, recoverAskQuestions } from "../tools/ask";
 import { disposeUnreferencedBrowsers } from "../tools/browser/registry";
@@ -426,6 +427,12 @@ export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from ".
 const SESSION_STOP_CONTINUATION_CAP = 8;
 /** 无 task_complete 标记的裸文本停止,nudge 续跑次数上限(per-prompt 复位)。 */
 const TASK_COMPLETE_MAX_CONTINUATIONS = 3;
+/**
+ * 无正文的 task_complete 标记(只打了标记没写汇报)允许的续跑次数上限。
+ * 正常路径一次就够:标记后模型下一轮补汇报,文本停止即被 guard 收口。
+ * 上限只兜住"连续只打标记、不写正文"的退化模型,避免无限续跑烧 token。
+ */
+const TASK_COMPLETE_MAX_SILENT_CONTINUATIONS = 2;
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
@@ -1022,6 +1029,8 @@ export class AgentSession implements SettingsScope {
 	#yieldTerminationPending = false;
 	#taskCompleteMarked = false;
 	#taskCompleteContinuations = 0;
+	/** Consecutive marker turns that carried no user-facing text, within one prompt cycle. */
+	#taskCompleteSilentContinuations = 0;
 	#synchronouslyTerminatedYieldToolCallIds = new Set<string>();
 	/**
 	 * Sticky across an in-flight prompt run: a successful `task_complete` marker
@@ -1041,6 +1050,7 @@ export class AgentSession implements SettingsScope {
 		this.#maintenance.resetForNewPrompt();
 		this.#yieldTerminationPending = false;
 		this.#taskCompleteTerminated = false;
+		this.#taskCompleteSilentContinuations = 0;
 	}
 
 	#acquirePowerAssertion(): void {
@@ -3461,7 +3471,7 @@ export class AgentSession implements SettingsScope {
 			this.#todo.onToolResult(event.message.toolName, event.message.isError);
 			// task_complete 标记:成功结果即"模型判定任务完成/需要输入/受阻",
 			// settle 路径据此终止(裸停止不再触发 guard nudge)。
-			if (event.message.toolName === "task_complete" && !event.message.isError) {
+			if (event.message.toolName === TASK_COMPLETE_TOOL_NAME && !event.message.isError) {
 				this.#taskCompleteMarked = true;
 			}
 		}
@@ -4358,10 +4368,11 @@ export class AgentSession implements SettingsScope {
 			// 模型主动标记(完成/需要输入/受阻):本轮终止。
 			this.#taskCompleteMarked = false;
 			this.#taskCompleteContinuations = 0;
+			this.#taskCompleteSilentContinuations = 0;
 			return false;
 		}
 		// 只有真正持有标记工具(顶层默认;子代理有自己的完成流)的会话启用 guard。
-		if (!this.agent.state.tools.some(tool => tool.name === "task_complete")) return false;
+		if (!this.agent.state.tools.some(tool => tool.name === TASK_COMPLETE_TOOL_NAME)) return false;
 		// goal 激活时停止语义归 goal 驱动:它带 goal 上下文续跑,裸文本停止由它接手,
 		// guard 不再叠 nudge,两套预算互不重置。
 		const goalState = this.#goalModeState;
@@ -4604,11 +4615,19 @@ export class AgentSession implements SettingsScope {
 		return this.#ttsr.afterToolCall(ctx);
 	}
 	/**
-	 * A successful `task_complete` marker is the run's last output: aborting with
-	 * the terminal-tool-result reason stops the loop before it spends one more
-	 * provider turn restating what the model just said.
+	 * A successful `task_complete` marker ends the run only when the model
+	 * actually said something in the same turn. The marker is a stop *signal*,
+	 * not a delivery channel: ending the run on a turn that carried no
+	 * user-facing text leaves the user with a marker chip and no report, so a
+	 * silent marker keeps the loop alive and the model writes its report on the
+	 * next turn. A text-bearing marker turn ends here, before the loop spends
+	 * another provider turn restating what the model just said.
 	 *
-	 * A marker batched with sibling calls is NOT terminal — the abort skips
+	 * The silent path is bounded by {@link TASK_COMPLETE_MAX_SILENT_CONTINUATIONS}
+	 * so a model that only ever fires the marker without reporting cannot loop
+	 * forever.
+	 *
+	 * A marker batched with sibling calls is never terminal — the abort skips
 	 * not-yet-started siblings and would drop their results. Such a turn keeps
 	 * the ordinary continuation and settles on the following text stop instead.
 	 */
@@ -4619,8 +4638,17 @@ export class AgentSession implements SettingsScope {
 	}): boolean {
 		if (this.#agentKind === "sub") return false;
 		if (cfgTaskCompleteEnabled.get(this.settings) !== true) return false;
-		if (ctx.toolName !== "task_complete" || ctx.isError === true) return false;
-		return ctx.assistantMessage.content.filter(content => content.type === "toolCall").length === 1;
+		if (ctx.toolName !== TASK_COMPLETE_TOOL_NAME || ctx.isError === true) return false;
+		if (ctx.assistantMessage.content.filter(content => content.type === "toolCall").length !== 1) return false;
+		if (
+			ctx.assistantMessage.content.some(
+				block => block.type === "text" && typeof block.text === "string" && block.text.trim().length > 0,
+			)
+		) {
+			return true;
+		}
+		this.#taskCompleteSilentContinuations++;
+		return this.#taskCompleteSilentContinuations >= TASK_COMPLETE_MAX_SILENT_CONTINUATIONS;
 	}
 
 	#terminateOnTaskCompleteMarker(): void {
@@ -9277,6 +9305,7 @@ export class AgentSession implements SettingsScope {
 			this.#taskCompleteMarked = false;
 			this.#taskCompleteContinuations = 0;
 			this.#taskCompleteTerminated = false;
+			this.#taskCompleteSilentContinuations = 0;
 			this.#planReferenceSent = false;
 			this.#planReferencePath = "local://PLAN.md";
 			this.#advisors.resetSessionState();

@@ -57,6 +57,7 @@ import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
+import { TASK_COMPLETE_TOOL_NAME } from "../tools/builtin-names";
 
 export {
 	type BranchSummaryMessage,
@@ -1003,6 +1004,44 @@ registerMessageCacheInvalidator(message => {
 	convertGeneration++;
 });
 
+/**
+ * Drop the `task_complete` `tool_use` block from an assistant turn before it
+ * reaches the provider, pairing with the dropped `tool_result` in
+ * {@link convertOne}. The marker is a runtime stop signal; leaving its call in
+ * history re-teaches the model each turn that the call is what ends a reply.
+ *
+ * Rewriting the turn invalidates its signed reasoning — Anthropic rejects a
+ * modified assistant turn — so `redactedThinking` is dropped and thinking
+ * signatures cleared, matching the dangling-`tool_use` strip in
+ * `buildSessionContext`.
+ *
+ * `stripped` reports whether this call rewrote the turn, so the caller can drop
+ * a turn the marker emptied without also dropping the empty turns that carry
+ * live state (an interrupted turn still owes `requestControls`).
+ */
+function stripTaskCompleteMarkerCall(message: AssistantMessage): {
+	message: AssistantMessage;
+	stripped: boolean;
+} {
+	if (!message.content.some(block => block.type === "toolCall" && block.name === TASK_COMPLETE_TOOL_NAME)) {
+		return { message, stripped: false };
+	}
+	return {
+		stripped: true,
+		message: {
+			...message,
+			content: message.content
+				.filter(block => !(block.type === "toolCall" && block.name === TASK_COMPLETE_TOOL_NAME))
+				.filter(block => block.type !== "redactedThinking")
+				.map(block =>
+					block.type === "thinking" && block.thinkingSignature !== undefined
+						? { ...block, thinkingSignature: undefined }
+						: block,
+				),
+		},
+	};
+}
+
 /** Convert one message to its LLM fragment. `interruptedNext` is true only for an
  *  assistant turn immediately followed by its interrupted-thinking marker. */
 function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
@@ -1103,12 +1142,18 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 			// encrypted blocks replay natively; incomplete unsigned runs are
 			// stripped whether or not they were long enough for a continuity note.
 			const userInterrupted = m.stopReason === "aborted" && isUserInterruptAbort(m);
-			const source = interruptedNext || userInterrupted ? stripDemotedThinkingForLlm(m) : m;
+			const interrupted = interruptedNext || userInterrupted ? stripDemotedThinkingForLlm(m) : m;
+			const markerStrip = stripTaskCompleteMarkerCall(interrupted);
+			const source = markerStrip.message;
 			// An empty interrupted response still carries the controls its request
 			// sent (e.g. an Anthropic `tool_removal`); later requests replay them from it.
 			if (userInterrupted && !interruptedNext && source.content.length === 0 && m.requestControls === undefined) {
 				return [];
 			}
+			// A turn whose only content was the completion marker leaves nothing to
+			// replay. Every other empty turn keeps the pre-existing handling above —
+			// notably an interrupted turn that still owes `requestControls`.
+			if (markerStrip.stripped && source.content.length === 0) return [];
 			const converted = convertMessageToLlm(canonicalizeXdToolCallNames(source));
 			return converted ? [converted] : [];
 		}
@@ -1126,6 +1171,14 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 			// Same pre-canonicalization history as `canonicalizeXdToolCallNames`;
 			// Gemini replays the result under this name.
 			const toolName = stripXdUrlPrefix(m.toolName);
+			// The completion marker is a stop signal for the runtime, not
+			// conversation content. Its result text ("Task marked complete.
+			// Control returns to the user.") teaches the model that the call itself
+			// ends the reply, so it fires the marker instead of writing the report.
+			// Dropped alongside its `tool_use` (see `stripTaskCompleteMarkerCall`) —
+			// a `tool_use` with no result makes `transformMessages` fabricate a
+			// synthetic aborted one.
+			if (toolName === TASK_COMPLETE_TOOL_NAME) return [];
 			const converted = convertMessageToLlm(toolName === m.toolName ? m : { ...m, toolName });
 			return converted ? [converted] : [];
 		}
