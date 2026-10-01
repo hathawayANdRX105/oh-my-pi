@@ -16,7 +16,7 @@
 | 审查工具喂整个 repo | 没分批 | 限流 / 输出噪音 / 大 diff 触发 jev API 400 静默失效 |
 | 用 `head`/`grep -v` 看 gate 输出 | 过滤截断 | 后面的 FAIL 被吞，假绿 |
 | worktree 嵌套 13 层、321G 重复产物 | 在 worktree 里再建 worktree | 磁盘事故（ferrite 真实发生过） |
-| `pkill -f cargo` 清进程 | 误杀别的会话构建 | 别人 CI/本地构建被腰斩；cpulimit 节流的 T 状态≠死进程 |
+| `pkill -f cargo` 清进程 | 误杀别的会话构建 | 别人 CI/本地构建被腰斩；限流器 节流的 T 状态≠死进程 |
 | `nohup ... &` 起服务 | 工具调用结束进程组被回收 | 服务静默死亡，界面报 500 |
 | 收完尾 worktree/分支留下 | 没清场清单 | 下个会话 `.wt/` 一堆僵尸目录 |
 | 前端进程被"顺手"关掉 | 没区分资源归属 | 维护者要看的页面/共享后端没了 |
@@ -112,7 +112,7 @@ loop:
 ```
 
 - 子代理必须在 `.wt/<branch>` 工作，prompt 写**全局绝对路径**，禁止仓库根目录写入。
-- CPU-heavy 命令（build/test/install）套 `cpulimit -l 60`；本地只跑 <2min 针对性检查，其余推 PR CI。
+- CPU-heavy 命令（build/test/install）套 `systemd-run --user --scope -p CPUQuota=60%`；本地只跑 <2min 针对性检查，其余推 PR CI。
 - **CI 未绿不得进入后续阶段**；CI 失败当新问题回 loop。
 - 修完重跑阶段 A 对应检查（修了复杂度就重跑 ccn+jev），直到干净。
 
@@ -184,7 +184,7 @@ git branch -d <branch>                     # 已合的分支；--delete-branch �
 - **Web 前端进程/共享后端**：如 ferrite 的 `just dev-backend`（3211）、dx wasm 前端（8090）、docker 容器 `uf-local-postgres`——维护者要验收页面，**不关**。
 - 其他会话在跑的进程一律不碰。
 
-清进程前必须确认归属：`readlink /proc/<pid>/cwd`。**禁止 `pkill -f cargo`/`pkill -f rustc`**——多半是别人的构建；被 cpulimit 节流的进程处于 T（暂停）状态，**T≠死进程**，活会话的用 `kill -CONT` 恢复。长驻服务用持久后台任务（`hub start`）起，禁 `nohup ... &`（工具调用结束进程组被回收，服务静默死亡）。
+清进程前必须确认归属：`readlink /proc/<pid>/cwd`。**禁止 `pkill -f cargo`/`pkill -f rustc`**——多半是别人的构建；被 限流器 节流的进程处于 T（暂停）状态，**T≠死进程**，活会话的用 `kill -CONT` 恢复。长驻服务用持久后台任务（`hub start`）起，禁 `nohup ... &`（工具调用结束进程组被回收，服务静默死亡）。
 
 ---
 
@@ -209,7 +209,7 @@ git branch -d <branch>                     # 已合的分支；--delete-branch �
 | 2 | FAIL 必须清零；WARN/INFO 逐条给结论写进 PR |
 | 3 | gate/gh 输出完整读，禁过滤后装没看见 |
 | 4 | 子代理只在 `.wt/<branch>`，prompt 给绝对路径；≤5 文件单主题 |
-| 5 | 重活 `cpulimit -l 60`；测试推 CI；CI 未绿不进后续阶段 |
+| 5 | 重活 `systemd-run --user --scope -p CPUQuota=60%`；测试推 CI；CI 未绿不进后续阶段 |
 | 6 | 同一问题 2 轮不过 → 停下报备，不无限循环 |
 | 7 | merge 前 `hooks/merge --dry-run` + diff 边界复核，不绕过 `.githooks/` |
 | 8 | 只清本会话 worktree/分支；删文件用 `gio trash`；禁 `rm`/`git clean` |

@@ -168,11 +168,11 @@ cg changes origin/main         # 当前 diff 的影响面 + risk 分
 | `cargo fmt --check` | 允许，提交前必跑 | 秒级 |
 | `cargo check -p <crate>` | 允许 | 禁止 `--workspace` / `--all-targets` |
 | `cargo test` / `clippy` / 全量 build | **禁止** | 一律交 PR 的 CI |
-| `cargo build --bin oi-web` | 允许，但必须 `cpulimit -l 65 -i --` | web UI 肉眼确认时的唯一例外 |
+| `cargo build --bin oi-web` | 允许，但必须套 cgroup CPU 配额 | web UI 肉眼确认时的唯一例外 |
 
 **验证节奏**：本地 `fmt --check` + 单 crate `check` → push → **CI 出结果才算验证过**。CI 红了看日志改，不在本地复现。
 
-> 待用户裁决：§6 smoke 若需要 `oi` / daemon 的本地二进制，现行 AGENTS.md 只给 `oi-web` 开了例外。建议把例外统一成"单 bin + `cpulimit -l 65 -i --`，禁 `--workspace`"；若你不同意，这类 smoke 就必须搬到 CI job 里做，任务书里要写明走哪条。
+> 待用户裁决：§6 smoke 若需要 `oi` / daemon 的本地二进制，现行 AGENTS.md 只给 `oi-web` 开了例外。建议把例外统一成"单 bin + `限流器 -l 65 -i --`，禁 `--workspace`"；若你不同意，这类 smoke 就必须搬到 CI job 里做，任务书里要写明走哪条。
 
 ---
 
@@ -184,7 +184,7 @@ Smoke 是**跑真东西**，不是跑测试文件。测试证明代码符合预�
 
 | 改动面 | smoke 做法 | 证据形状 |
 |---|---|---|
-| Web UI | 按 AGENTS.md 启动序列起 `oi-web`(npm install → touch tailwind-input.css → cpulimit build → 杀旧进程重启 → 浏览器硬刷新)，按对应 UI 契约 yaml 的抽查点逐项看 | 伺服页 `<style>` 字节数(非 0)+ 逐抽查点结论 |
+| Web UI | 按 AGENTS.md 启动序列起 `oi-web`(npm install → touch tailwind-input.css → 限流器 build → 杀旧进程重启 → 浏览器硬刷新)，按对应 UI 契约 yaml 的抽查点逐项看 | 伺服页 `<style>` 字节数(非 0)+ 逐抽查点结论 |
 | CLI(`oi`) | 真跑命令链，贴输入输出 | 命令 + cwd + 实际 stdout |
 | daemon / RPC | 起 daemon，发一条真实 RPC，看 `event.subscribe` 流有增量 | 请求 + 收到的事件序列 |
 | 纯库 crate(无入口) | 写一次性脚本调真实路径，跑完**删掉** | 脚本内容 + 输出，并声明已删除 |
