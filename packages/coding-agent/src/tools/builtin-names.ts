@@ -34,6 +34,14 @@ export const BUILTIN_TOOL_NAMES = [
 
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
 
+/**
+ * Zero-argument stop marker. The name is load-bearing across layers — the tool
+ * registry, the session's settle guard, and the context filter that keeps the
+ * marker out of the model's history — so it lives here rather than as a literal
+ * at each site.
+ */
+export const TASK_COMPLETE_TOOL_NAME = "task_complete";
+
 export const HIDDEN_TOOL_NAMES = ["yield", "goal", "think"] as const;
 
 export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];
