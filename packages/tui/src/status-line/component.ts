@@ -2812,7 +2812,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				if (labels.length > 0) {
 					const shown = labels.slice(0, 2).join(", ");
 					const extra = labels.length > 2 ? ` +${labels.length - 2}` : "";
-					labelText = `${shown}${extra}`;
+					labelText = `${runningBackgroundJobs} · ${shown}${extra}`;
 				}
 				rightParts.unshift(theme.fg("statusLineSubagents", `${theme.icon.job} ${truncateToWidth(labelText, 48)}`));
 			}
@@ -3545,7 +3545,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			if (labels.length > 0) {
 				const shown = labels.slice(0, 2).join(", ");
 				const extra = labels.length > 2 ? ` +${labels.length - 2}` : "";
-				labelText = `${shown}${extra}`;
+				labelText = `${runningBackgroundJobs} · ${shown}${extra}`;
 			}
 			push("jobs", "right", 0, {
 				spans: [{ t: labelText, s: "statusLineSubagents" }],
