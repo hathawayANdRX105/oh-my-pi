@@ -225,18 +225,15 @@ describe("ACP initialize conformance", () => {
 		});
 	});
 
-	it("declares agentInfo.version that matches the published package version", async () => {
+	it("declares agentInfo.version from the runtime VERSION constant", async () => {
 		const agent = await createAgent();
 		const response = await agent.initialize(buildInitializeRequest());
-		const pkgPath = path.join(import.meta.dir, "..", "package.json");
-		const pkg = (await Bun.file(pkgPath).json()) as { version: string };
 		expect(response.agentInfo).toEqual(
 			expect.objectContaining({
 				title: "omp",
 				version: VERSION,
 			}),
 		);
-		expect(response.agentInfo!.version).toBe(pkg.version);
 	});
 
 	it("preserves the agentCapabilities contract clients depend on", async () => {

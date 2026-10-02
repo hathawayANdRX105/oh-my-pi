@@ -180,6 +180,10 @@ describe("browser open — failed spawned-app acquisition reaps its owned proces
 			stealth: { browserSession: null, override: null },
 		} as unknown as registry.BrowserHandle;
 		spyOn(registry, "acquireBrowser").mockResolvedValue(browser);
+		// A mocked acquisition bypasses the real registry write, so register the
+		// handle here — otherwise `acquireTabImpl` fast-fails with "Browser was
+		// disposed" before the no-page-target path the test exercises.
+		registry.registerBrowserForTest(browser.key, browser);
 		const killSpy = spyOn(attach, "gracefulKillTreeOnce").mockResolvedValue(undefined);
 
 		const invokeBrowser = createBrowserHost();
