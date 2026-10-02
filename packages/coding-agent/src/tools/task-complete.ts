@@ -4,14 +4,16 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import taskCompleteDescription from "../prompts/tools/task-complete.md" with { type: "text" };
 
 /**
- * `task_complete` — the explicit task stop guard (freebuff-style).
+ * `task_complete` — the explicit task stop marker (freebuff-style).
  *
  * Empty-parameter marker tool: the model calls it when the user's request is
- * fulfilled, it needs clarification, or it is blocked. A text-only stop with
- * no marker is NOT terminal while the guard is armed — the session nudges and
- * continues instead. The tool itself is stateless: the guard reads the
- * toolResult's presence from the settle path, so nothing lands in the
- * session's write path.
+ * fulfilled, it needs clarification, or it is blocked. The marker is the
+ * model's explicit stop decision, but it is not required for a text-only stop
+ * to be terminal: empty stops are handled by empty-stop recovery, and
+ * incomplete todo work is guarded by the todo reminder, so no nudge
+ * continuation is scheduled. The tool itself is stateless: the marker's
+ * termination is read from the tool result on the settle path, so nothing lands
+ * in the session's write path.
  *
  * The marker is invisible to the model: `convertToLlm` drops both the call and
  * its result from provider-bound history, so the tool never re-teaches the

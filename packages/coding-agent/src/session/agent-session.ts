@@ -187,7 +187,7 @@ import goalModeContextPrompt from "../prompts/goals/goal-mode-context.md" with {
 import goalTodoContextPrompt from "../prompts/goals/goal-todo-context.md" with { type: "text" };
 import anthropicUsageWrapUpPrompt from "../prompts/system/anthropic-usage-wrap-up.md" with { type: "text" };
 import autoContinuePrompt from "../prompts/system/auto-continue.md" with { type: "text" };
-import taskCompleteNudgePrompt from "../prompts/system/task-complete-nudge.md" with { type: "text" };
+
 import checkpointActiveNoticeTemplate from "../prompts/system/checkpoint-active-notice.md" with { type: "text" };
 import interruptedThinkingTemplate from "../prompts/system/interrupted-thinking.md" with { type: "text" };
 import planModeActivePrompt from "../prompts/system/plan-mode-active.md" with { type: "text" };
@@ -425,8 +425,6 @@ export * from "./agent-session-types";
 export type { AdvisorStats, AdvisorStatusOverviewEntry, PerAdvisorStat } from "./session-advisors";
 
 const SESSION_STOP_CONTINUATION_CAP = 8;
-/** 无 task_complete 标记的裸文本停止,nudge 续跑次数上限(per-prompt 复位)。 */
-const TASK_COMPLETE_MAX_CONTINUATIONS = 3;
 /**
  * 无正文的 task_complete 标记(只打了标记没写汇报)允许的续跑次数上限。
  * 正常路径一次就够:标记后模型下一轮补汇报,文本停止即被 guard 收口。
@@ -1028,7 +1026,6 @@ export class AgentSession implements SettingsScope {
 	 */
 	#yieldTerminationPending = false;
 	#taskCompleteMarked = false;
-	#taskCompleteContinuations = 0;
 	/** Consecutive marker turns that carried no user-facing text, within one prompt cycle. */
 	#taskCompleteSilentContinuations = 0;
 	#synchronouslyTerminatedYieldToolCallIds = new Set<string>();
@@ -4193,11 +4190,7 @@ export class AgentSession implements SettingsScope {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
-				const taskCompleteContinuationScheduled = this.#checkTaskCompleteGuard(msg);
-				if (taskCompleteContinuationScheduled) {
-					await emitAgentEndNotification({ willContinue: true });
-					return;
-				}
+				this.#dischargeTaskCompleteMarker(msg);
 				const todoContinuationScheduled = await this.#todo.checkCompletion(msg);
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
@@ -4356,49 +4349,21 @@ export class AgentSession implements SettingsScope {
 	}
 
 	/**
-	 * Task completion guard: while this session carries the task_complete marker,
-	 * a text-only stop without the marker is not terminal — nudge and continue
-	 * (capped). Model-judged stop is deliberately separate from provider-error
-	 * recovery, which stays on the goal-continuation / retry machinery.
+	 * Task completion marker discharge: a successful `task_complete` marker is the
+	 * model's own stop decision, so the marked stop settles terminally. Text-only
+	 * stops without the marker are terminal too — empty stops are handled by
+	 * empty-stop recovery, and incomplete todo work is guarded separately by the
+	 * todo reminder, so no nudge continuation is scheduled here. Provider-error
+	 * recovery stays on the goal-continuation / retry machinery and is unaffected.
 	 */
-	#checkTaskCompleteGuard(msg: AssistantMessage): boolean {
-		if (cfgTaskCompleteEnabled.get(this.settings) !== true) return false;
-		if (msg.stopReason !== "stop") return false;
+	#dischargeTaskCompleteMarker(msg: AssistantMessage): void {
+		if (cfgTaskCompleteEnabled.get(this.settings) !== true) return;
+		if (msg.stopReason !== "stop") return;
 		if (this.#taskCompleteMarked) {
 			// 模型主动标记(完成/需要输入/受阻):本轮终止。
 			this.#taskCompleteMarked = false;
-			this.#taskCompleteContinuations = 0;
 			this.#taskCompleteSilentContinuations = 0;
-			return false;
 		}
-		// 只有真正持有标记工具(顶层默认;子代理有自己的完成流)的会话启用 guard。
-		if (!this.agent.state.tools.some(tool => tool.name === TASK_COMPLETE_TOOL_NAME)) return false;
-		// goal 激活时停止语义归 goal 驱动:它带 goal 上下文续跑,裸文本停止由它接手,
-		// guard 不再叠 nudge,两套预算互不重置。
-		const goalState = this.#goalModeState;
-		if (goalState?.enabled === true && goalState.goal.status === "active" && goalState.mode !== "exiting") {
-			return false;
-		}
-		if (this.#taskCompleteContinuations >= TASK_COMPLETE_MAX_CONTINUATIONS) return false;
-		this.#taskCompleteContinuations++;
-		const nudge: AgentMessage = {
-			role: "developer",
-			content: [
-				{
-					type: "text",
-					text: prompt.render(taskCompleteNudgePrompt, {
-						attempt: this.#taskCompleteContinuations,
-						max: TASK_COMPLETE_MAX_CONTINUATIONS,
-					}),
-				},
-			],
-			attribution: "agent",
-			timestamp: Date.now(),
-		};
-		this.agent.appendMessage(nudge);
-		this.sessionManager.appendMessage(nudge);
-		this.#scheduleAgentContinue({ source: "task-complete-guard", generation: this.#promptGeneration });
-		return true;
 	}
 	#scheduleAgentContinue(options: ScheduledAgentContinueOptions): void {
 		const request: ScheduledAgentContinueRequest = {
@@ -7534,9 +7499,8 @@ export class AgentSession implements SettingsScope {
 			this.#irc.flushPending();
 
 			this.#todo.resetCycle();
-			// 新用户 prompt = 新的 guard 窗口:标记与 nudge 计数随 todo cycle 一起复位。
+			// 新用户 prompt = 新的 guard 窗口:标记状态随 todo cycle 一起复位。
 			this.#taskCompleteMarked = false;
-			this.#taskCompleteContinuations = 0;
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
 
@@ -9301,9 +9265,8 @@ export class AgentSession implements SettingsScope {
 			this.sessionManager.appendServiceTierChange(this.#models.serviceTierEntry());
 
 			this.#todo.resetCycle();
-			// /new = 全新会话:guard 三个标志一并复位,不带旧会话的标记/续跑预算进新会话。
+			// /new = 全新会话:guard 标志一并复位,不带旧会话的标记状态进新会话。
 			this.#taskCompleteMarked = false;
-			this.#taskCompleteContinuations = 0;
 			this.#taskCompleteTerminated = false;
 			this.#taskCompleteSilentContinuations = 0;
 			this.#planReferenceSent = false;
