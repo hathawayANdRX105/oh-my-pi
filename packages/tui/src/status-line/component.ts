@@ -915,6 +915,19 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	}
 
 	/**
+	 * Human-readable labels of running background jobs outside the subagent
+	 * badge, matching {@link runningBackgroundJobCount}. Falls back to the job
+	 * type when a job carries no label.
+	 */
+	runningBackgroundJobLabels(): string[] {
+		const snapshot = this.session.getAsyncJobSnapshot?.();
+		if (!snapshot) return [];
+		return snapshot.running
+			.filter(job => job.type !== "task" || job.agentId === undefined || !this.#runningSubagentIds.has(job.agentId))
+			.map(job => job.label || job.type);
+	}
+
+	/**
 	 * Reset the currently-attached session's active-time accumulators so
 	 * the `time_spent` segment starts from zero. Called from `/clear`,
 	 * fresh-session, and joined-collab paths; both the completed
@@ -2794,7 +2807,14 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		if (layout !== "plain-left") {
 			const runningBackgroundJobs = this.runningBackgroundJobCount();
 			if (runningBackgroundJobs > 0) {
-				rightParts.unshift(theme.fg("statusLineSubagents", `${theme.icon.job} ${runningBackgroundJobs}`));
+				const labels = this.runningBackgroundJobLabels();
+				let labelText = `${runningBackgroundJobs}`;
+				if (labels.length > 0) {
+					const shown = labels.slice(0, 2).join(", ");
+					const extra = labels.length > 2 ? ` +${labels.length - 2}` : "";
+					labelText = `${shown}${extra}`;
+				}
+				rightParts.unshift(theme.fg("statusLineSubagents", `${theme.icon.job} ${truncateToWidth(labelText, 48)}`));
 			}
 			if (subagentBadge) rightParts.unshift(subagentBadge);
 		}
@@ -3520,8 +3540,15 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		const runningBackgroundJobs = this.runningBackgroundJobCount();
 		if (runningBackgroundJobs > 0) {
+			const labels = this.runningBackgroundJobLabels();
+			let labelText = `${runningBackgroundJobs}`;
+			if (labels.length > 0) {
+				const shown = labels.slice(0, 2).join(", ");
+				const extra = labels.length > 2 ? ` +${labels.length - 2}` : "";
+				labelText = `${shown}${extra}`;
+			}
 			push("jobs", "right", 0, {
-				spans: [{ t: `${runningBackgroundJobs}`, s: "statusLineSubagents" }],
+				spans: [{ t: labelText, s: "statusLineSubagents" }],
 				icon: "job",
 			});
 		}
