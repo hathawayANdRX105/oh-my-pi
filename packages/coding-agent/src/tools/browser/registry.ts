@@ -484,6 +484,11 @@ export function getBrowsersMapForTest(): ReadonlyMap<string, BrowserHandle> {
 	return browsers;
 }
 
+/** Test-only registration for the module-global browsers map (mocked acquisition bypasses the real registry write). */
+export function registerBrowserForTest(key: string, handle: BrowserHandle): void {
+	browsers.set(key, handle);
+}
+
 /**
  * Dispose every browser handle nobody holds a tab on. `releaseTabsForOwner`
  * only walks `tabs`, so a handle whose refCount already hit 0 — an aborted
