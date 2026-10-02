@@ -365,7 +365,7 @@ export const cfgTodoRemindersMax = register({
 	},
 });
 
-// Task completion guard
+// Task completion marker
 export const cfgTaskCompleteEnabled = register({
 	id: "taskComplete.enabled",
 	type: "boolean",
@@ -373,9 +373,9 @@ export const cfgTaskCompleteEnabled = register({
 	ui: {
 		tab: "tools",
 		group: "Available Tools",
-		label: "Task Complete Guard",
+		label: "Task Complete Marker",
 		description:
-			"Stop runs on the model's explicit task_complete marker (a hidden signal, kept out of model context): a text-only stop without the marker nudges the run to continue (capped), provider-error continuation is unaffected",
+			"Stop runs on the model's explicit task_complete marker (a hidden signal, kept out of model context). Text-only stops are terminal regardless; incomplete todo work is guarded by the todo reminder, provider-error continuation is unaffected",
 	},
 });
 

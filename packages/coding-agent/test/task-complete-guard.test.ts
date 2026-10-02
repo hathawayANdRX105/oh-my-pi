@@ -13,14 +13,11 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 /**
- * Task completion guard: while the `task_complete` marker tool is active, a
- * text-only stop without the marker is not terminal — the session nudges and
- * continues (capped); the marker (or the cap) ends the run. The marker is a stop
- * *signal*, not a delivery channel: it ends the run at its tool result only when
- * the marker turn also carried user-facing text. A silent marker keeps the run
- * alive so the model still gets its report turn, capped against a degenerate
- * marker-only loop. Provider-error recovery stays on the goal-continuation
- * machinery and is unaffected.
+ * Task completion marker semantics: a text-bearing `task_complete` marker ends
+ * the run at its tool result; a silent marker keeps the run alive so the model
+ * still gets its report turn (capped against a degenerate marker-only loop); a
+ * text-only stop without the marker is terminal — no nudge continuation is
+ * scheduled. Provider-error recovery stays on the goal-continuation machinery.
  */
 describe("task completion guard", () => {
 	let tempDir: TempDir;
@@ -137,30 +134,28 @@ describe("task completion guard", () => {
 			message => message.role === "developer" && JSON.stringify(message.content).includes("task_complete"),
 		).length;
 
-	it("nudges bare stops and caps at three continuations", async () => {
+	it("treats a bare text stop as terminal without nudging", async () => {
 		armStream(() => ({ text: "still working" }));
 
 		await session.prompt("do the work");
 		await session.waitForIdle();
 
-		// bare stop 0 → nudge → call 1; nudge → call 2; nudge → call 3; cap → terminal.
-		expect(providerCall).toBe(4);
-		expect(nudgeCount()).toBe(3);
+		// A text-only stop without the marker ends the run: no nudge continuation.
+		expect(providerCall).toBe(1);
+		expect(nudgeCount()).toBe(0);
 	});
 	it("ends the run at a text-bearing marker, without buying a follow-up turn", async () => {
 		// The model states its result and closes with the marker in one turn; the
 		// loop must not spend another provider call asking it to restate that.
-		armStream(n =>
-			n === 0 ? { text: "working" } : n === 1 ? { markerWithText: true, text: "all done" } : { text: "unreachable" },
-		);
+		armStream(n => (n === 0 ? { markerWithText: true, text: "all done" } : { text: "unreachable" }));
 
 		await session.prompt("do the work");
 		await session.waitForIdle();
 
-		// n=0 bare stop → one nudge; n=1 text + marker ends the run at the tool
-		// result, so the trailing text turn never happens.
-		expect(providerCall).toBe(2);
-		expect(nudgeCount()).toBe(1);
+		// n=0 text + marker ends the run at the tool result, so the trailing text
+		// turn never happens.
+		expect(providerCall).toBe(1);
+		expect(nudgeCount()).toBe(0);
 		expect(
 			session.agent.state.messages.some(
 				message => message.role === "assistant" && JSON.stringify(message.content).includes("unreachable"),
@@ -176,16 +171,15 @@ describe("task completion guard", () => {
 	it("keeps the run alive after a silent marker so the model still reports", async () => {
 		// A marker with no text used to end the run at the tool result, leaving the
 		// user with a marker chip and no report. The run must continue instead: the
-		// model gets its report turn, and the marked flag settles that stop.
-		armStream(n => (n === 0 ? { text: "working" } : n === 1 ? { marker: true } : { text: "all done" }));
+		// model gets its report turn, and the marked stop settles terminally.
+		armStream(n => (n === 0 ? { marker: true } : { text: "all done" }));
 
 		await session.prompt("do the work");
 		await session.waitForIdle();
 
-		// n=0 bare stop → nudge; n=1 silent marker keeps the loop alive; n=2 delivers
-		// the report and settles without another nudge.
-		expect(providerCall).toBe(3);
-		expect(nudgeCount()).toBe(1);
+		// n=0 silent marker keeps the loop alive; n=1 delivers the report and settles.
+		expect(providerCall).toBe(2);
+		expect(nudgeCount()).toBe(0);
 		expect(
 			session.agent.state.messages.some(
 				message => message.role === "assistant" && JSON.stringify(message.content).includes("all done"),
@@ -209,14 +203,14 @@ describe("task completion guard", () => {
 		// A batched marker is not terminal: the terminal abort would skip the
 		// not-yet-started sibling and drop its result, so the run continues and
 		// settles on the next stop.
-		armStream(n => (n === 0 ? { text: "working" } : n === 1 ? { batchedMarker: true } : { text: "all done" }));
+		armStream(n => (n === 0 ? { batchedMarker: true } : { text: "all done" }));
 
 		await session.prompt("do the work");
 		await session.waitForIdle();
 
-		// n=0 bare stop → one nudge; n=1 batched marker keeps the loop alive and
-		// still delivers the sibling result; n=2 settles on the marked stop.
-		expect(providerCall).toBe(3);
+		// n=0 batched marker keeps the loop alive and still delivers the sibling
+		// result; n=1 settles on the marked stop.
+		expect(providerCall).toBe(2);
 		expect(
 			session.agent.state.messages.some(message => message.role === "toolResult" && message.toolName === "read"),
 		).toBe(true);
