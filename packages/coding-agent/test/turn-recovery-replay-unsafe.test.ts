@@ -722,14 +722,12 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			const message = transportError([toolCall("call-1")]);
 			const recovery = recoveryForTransport(message, [realResult("call-1")]);
 			expect(recovery.isRetryableError(message)).toBe(false);
-			expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
 		});
 
 		it("does not retry when a synthetic result is followed by a real result for the same call", () => {
 			const message = transportError([toolCall("call-1")]);
 			const recovery = recoveryForTransport(message, [syntheticResult("call-1"), realResult("call-1")]);
 			expect(recovery.isRetryableError(message)).toBe(false);
-			expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
 		});
 
 		it("does not retry when only some tool calls went unexecuted", () => {

@@ -153,6 +153,7 @@ function createContext(): {
 		retryEscapeHandler: undefined,
 		session: {
 			isStreaming: false,
+			isRunActive: false,
 			isCompacting: false,
 			isGeneratingHandoff: false,
 			isBashRunning: false,
@@ -285,6 +286,14 @@ type MutableSessionState = InteractiveModeContext["session"] & {
 	isStreaming: boolean;
 };
 
+type MutableRunState = { isRunActive: boolean };
+
+function mutableRunState(ctx: InteractiveModeContext): MutableRunState {
+	// Test harness installs a mutable fake AgentSession. `isRunActive` is a
+	// getter on the real class, so it needs its own named unchecked cast to be
+	// writable here; the fake carries it as plain state.
+	return ctx.session as unknown as MutableRunState;
+}
 function mutableSessionState(ctx: InteractiveModeContext): MutableSessionState {
 	// Test harness installs a mutable fake AgentSession; keep the unchecked cast named
 	// so state mutations are explicit.
@@ -577,6 +586,38 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
+	});
+
+	// A run whose stream died before settling is advertised as running while
+	// nothing is streaming and nothing is retrying. The maintenance gates above
+	// are all false, so before `isRunActive` this fell through to the draft and
+	// double-Esc branches: a running badge the user could not clear with Esc.
+	it("aborts a run advertised as live with no bytes in flight", () => {
+		const { ctx, editor, spies } = createContext();
+		mutableRunState(ctx).isRunActive = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+	});
+
+	// The counterpart that keeps the widening safe: widening the Esc condition
+	// must not turn Esc into "throw away what I was typing" on an idle session.
+	// `isRunActive` is the only added term, and it is false whenever no run is
+	// advertised, so the draft branch stays reachable.
+	it("still preserves an in-progress draft when no run is advertised", () => {
+		const { ctx, editor, spies } = createContext();
+		editor.setText("half-written prompt");
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(editor.getText()).toBe("half-written prompt");
 	});
 
 	it("aborts the submitted turn on the first Esc once the main session starts streaming", async () => {

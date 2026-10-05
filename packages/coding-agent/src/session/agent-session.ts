@@ -766,6 +766,10 @@ export class AgentSession implements SettingsScope {
 	#eventListeners: AgentSessionEventListener[] = [];
 	#activeToolExecutionUpdates = new Map<string, Extract<AgentSessionEvent, { type: "tool_execution_update" }>>();
 	#runStateListeners = new Set<(state: "running" | "idle") => void>();
+	/** Last state handed to {@link #emitRunState}. `idle` is only broadcast on a real transition, so a
+	 *  listener can never observe a duplicate settle, and {@link abort} can tell whether a run is still
+	 *  advertised as running when it tears down. */
+	#runState: "running" | "idle" = "idle";
 	#commandMetadataChangedListeners: CommandMetadataChangedListener[] = [];
 	#sessionChangeCallbacks = new Set<() => void>();
 	#observedSessionId: string | undefined;
@@ -2882,7 +2886,16 @@ export class AgentSession implements SettingsScope {
 		}
 	}
 
+	/**
+	 * Broadcast a run-state transition. Repeat broadcasts of the current state
+	 * are dropped: `idle` in particular is emitted from both the settle path and
+	 * {@link abort}'s teardown, and a listener that mirrors the state into an
+	 * agent registry (see `AgentRegistry.syncSessionStatus`) must not be told a
+	 * run settled twice.
+	 */
 	#emitRunState(state: "running" | "idle"): void {
+		if (this.#runState === state) return;
+		this.#runState = state;
 		for (const listener of this.#runStateListeners) {
 			try {
 				listener(state);
@@ -5908,6 +5921,19 @@ export class AgentSession implements SettingsScope {
 
 	get isAborting(): boolean {
 		return this.agent.isAborting;
+	}
+
+	/**
+	 * Whether the session currently advertises a live run to its run-state
+	 * listeners — broader than {@link isStreaming}, which also covers backoff
+	 * waits and any phase where a run is live but no bytes are moving.
+	 *
+	 * Public because a UI gating its interrupt affordance on `isStreaming` alone
+	 * cannot stop those phases, and cannot clear a badge whose run died before
+	 * it ever settled.
+	 */
+	get isRunActive(): boolean {
+		return this.#runState === "running";
 	}
 
 	/**
@@ -9165,6 +9191,12 @@ export class AgentSession implements SettingsScope {
 			}
 		} finally {
 			this.#abortInProgress = false;
+			// An abort ends the run by definition. `idle` otherwise rides in on the
+			// agent_end the abort triggers, which never arrives when the loop had
+			// already settled — leaving every run-state listener (and the agent
+			// registry mirror behind them) advertising `running` with nothing left
+			// to stop, which is what made Esc look dead.
+			this.#emitRunState("idle");
 			this.#drainStrandedQueuedMessages();
 		}
 	}
