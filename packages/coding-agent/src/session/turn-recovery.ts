@@ -1551,10 +1551,20 @@ export class TurnRecovery {
 
 	/**
 	 * Mid-generation transport death: the local idle watchdog's stream stall, an
-	 * HTTP/2 stream reset, or a gateway close without the terminal event. A
-	 * premature close (no finish_reason/terminal event) is the same failure
-	 * class as a stall or reset. Resets and closes are ignored while a
-	 * deliberate abort, disposal, or streaming-edit abort owns the stream.
+	 * HTTP/2 stream reset, a gateway close without the terminal event, or the
+	 * peer dropping the socket mid-body. A premature close (no
+	 * finish_reason/terminal event) is the same failure class as a stall or
+	 * reset — and so is Bun's "socket connection was closed unexpectedly": the
+	 * body ended before the terminal event arrived. Resets and closes are
+	 * ignored while a deliberate abort, disposal, or streaming-edit abort owns
+	 * the stream.
+	 *
+	 * The socket-close wording used to be absent from the pattern set below, so
+	 * a socket close never reached {@link classifyResolvedInterruptedToolTurn}
+	 * and never resumed a tool turn whose calls had all returned — the one case
+	 * the stream-stall branch has always recovered, for identical reasons and
+	 * with the same no-replay guarantee (`preserveFailedTurn` keeps the
+	 * assistant/tool-result pair in context).
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
@@ -1567,7 +1577,8 @@ export class TurnRecovery {
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) ||
 			AIError.PYTHON_HTTP2_STREAM_RESET_PATTERN.test(errorMessage) ||
 			AIError.PYTHON_HTTP_INCOMPLETE_CHUNK_PATTERN.test(errorMessage) ||
-			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage)
+			PREMATURE_STREAM_CLOSE_ERROR_RE.test(errorMessage) ||
+			isUnexpectedSocketCloseMessage(errorMessage)
 		);
 	}
 	/**
