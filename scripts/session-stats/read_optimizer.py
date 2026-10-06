@@ -31,7 +31,7 @@ import sqlite3
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -239,19 +239,15 @@ def parse_call(row) -> ReadCall | None:
     if not base or base.endswith("/") or "://" in base:
         return None
     ext = Path(base).suffix.lower()
-    if ext not in TEXT_EXTS:
-        # Keep unknown extension text if it has line selectors, skip obvious binary-ish paths.
-        if kind not in ("explicit", "open", "default"):
-            return None
+    # Keep unknown extension text if it has line selectors, skip obvious binary-ish paths.
+    if ext not in TEXT_EXTS and kind not in ("explicit", "open", "default"):
+        return None
 
     current_lines = current_line_count(kind, start, end)
     rtok = int(result_tokens or 0)
-    if current_lines > 0:
-        # Include the observed framing/line-number overhead in a per-line rate.
-        # Clamp avoids a one-line error response implying giant line cost.
-        token_per_line = min(100.0, max(0.25, rtok / current_lines))
-    else:
-        token_per_line = 0.0
+    # Per-line rate includes observed framing/line-number overhead; the clamp
+    # avoids a one-line error response implying a giant line cost.
+    token_per_line = min(100.0, max(0.25, rtok / current_lines)) if current_lines > 0 else 0.0
     return ReadCall(
         session=str(session),
         file=base,
@@ -497,9 +493,9 @@ def candidate_grid(args) -> list[Config]:
         for m in maxes:
             if d > m:
                 continue
-            for l in leads:
+            for lead in leads:
                 for t in trails:
-                    out.append(Config(d, m, l, t))
+                    out.append(Config(d, m, lead, t))
     return out
 
 
@@ -705,7 +701,7 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=15, help="print top N configs")
     args = ap.parse_args()
 
-    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=UTC)
     since_ms = int(since.timestamp() * 1000)
 
     if not DB_PATH.exists():
@@ -744,9 +740,11 @@ def main() -> int:
     for i, r in enumerate(sorted(allowed, key=lambda r: r.tokens)[: args.top], 1):
         print_result(f"#{i}", r, current)
 
-    print(
-        f"\nTop balanced configs (tokens + 250 tokens/read-call objective, truncations <= current {current.truncations:,}):"
+    label = (
+        f"\nTop balanced configs (tokens + 250 tokens/read-call objective, "
+        f"truncations <= current {current.truncations:,}):"
     )
+    print(label)
     for i, r in enumerate(
         sorted(allowed, key=lambda r: r.tokens + 250 * r.calls)[: args.top], 1
     ):

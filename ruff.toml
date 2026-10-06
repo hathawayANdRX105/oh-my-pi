@@ -7,15 +7,10 @@
 line-length = 120
 target-version = "py311"
 
-# 脚手架/工具/实验目录的存量 ruff 债按目录分批 PR 清理, 清完一批就把对应项从本
-# extend-exclude 移除(恢复到全量 lint), 最终解阻 pre-push 后全量门。
-# 用 extend-exclude(与 CLI 的 --exclude .githooks 叠加), 不用顶层 exclude
-# (会被 canon 命令的 CLI --exclude 整体覆盖, 脚手架排除失效)。
-extend-exclude = [
-    # 分析/回测脚手架: 含未定义名等真逻辑债(range_deleted_lines 用了却从未定义,
-    # 是 NameError 隐患, 意图未知), 不宜在 lint 批次里猜修, 留待逻辑评审。
-    "scripts/session-stats",
-]
+# 全仓门现已激活: 脚手架/研究/eval 的存量 ruff 债已分批清完(#16–#21), 不再需要
+# extend-exclude。若未来再新增脚手架, 按目录分批清理, 且用 extend-exclude
+# (与 canon CLI 的 --exclude .githooks 叠加)而非顶层 exclude(顶层会被 CLI --exclude 覆盖)。
+# 仅存 per-file-ignores: 对一次性研究/eval 脚本豁免若干风格规则, 真·bug 规则(F)仍生效。
 
 [lint]
 # 收敛的基线: PEP8 + pyflakes(未用/未定义) + import 排序 + pyupgrade + bugbear + 简化。

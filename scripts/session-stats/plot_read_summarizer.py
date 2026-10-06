@@ -22,7 +22,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import matplotlib.dates as mdates
@@ -149,10 +149,10 @@ def daily_sum(ts_ms: np.ndarray, tok: np.ndarray, day_axis: np.ndarray) -> np.nd
     if ts_ms.size == 0:
         return out
     bucket = (ts_ms // DAY_MS) * DAY_MS
-    idx = {int(d): i for i, d in enumerate(day_axis)}
+    {int(d): i for i, d in enumerate(day_axis)}
     # Vectorize via searchsorted on a sorted day_axis (it is).
     pos = np.searchsorted(day_axis, bucket)
-    for p, t, b in zip(pos, tok, bucket):
+    for p, t, b in zip(pos, tok, bucket, strict=False):
         if p < day_axis.size and day_axis[p] == b:
             out[p] += t
     return out
@@ -173,7 +173,7 @@ def daily_percentile(
         if hi > lo:
             pct[i] = np.percentile(tok[lo:hi], q)
     dates = np.array(
-        [datetime.fromtimestamp(int(d) * DAY_MS / 1000, tz=timezone.utc) for d in days]
+        [datetime.fromtimestamp(int(d) * DAY_MS / 1000, tz=UTC) for d in days]
     )
     return dates, pct
 
@@ -233,7 +233,7 @@ def panel_share_stacked(
         labels.append(cohort)
         colors.append(color)
     x = np.array(
-        [datetime.fromtimestamp(int(d) / 1000, tz=timezone.utc) for d in denom_dates]
+        [datetime.fromtimestamp(int(d) / 1000, tz=UTC) for d in denom_dates]
     )
     ax.stackplot(x, series, labels=labels, colors=colors, alpha=0.85)
     ax.set_title("read share of daily token spend (7d MA)")
@@ -247,7 +247,7 @@ def panel_share_stacked(
 def panel_share_line(ax: plt.Axes, reads, denom_dates, denom, deploy: datetime) -> None:
     """Lines: each cohort's share, plus the combined total."""
     x = np.array(
-        [datetime.fromtimestamp(int(d) / 1000, tz=timezone.utc) for d in denom_dates]
+        [datetime.fromtimestamp(int(d) / 1000, tz=UTC) for d in denom_dates]
     )
     total = np.zeros(denom_dates.size, dtype=np.int64)
     for cohort, color in COHORT_COLORS.items():
@@ -307,7 +307,7 @@ def share_stats(reads, denom_dates, denom, deploy_ms: int) -> None:
     post_mask = denom_dates >= deploy_ms
     pre_total = int(denom[pre_mask].sum())
     post_total = int(denom[post_mask].sum())
-    print(f"\nshare-of-day (pre vs post deploy):")
+    print("\nshare-of-day (pre vs post deploy):")
     print(
         f"  denominator pre  = {pre_total:>14,} tokens across {int(pre_mask.sum())} days"
     )
@@ -339,7 +339,7 @@ def share_stats(reads, denom_dates, denom, deploy_ms: int) -> None:
 
 
 def per_call_stats(reads, deploy_ms: int) -> None:
-    print(f"\nper-call stats (pre vs post deploy):")
+    print("\nper-call stats (pre vs post deploy):")
     print(
         f"  {'cohort':<22} {'window':<6} {'n':>9}  {'p50':>7}  {'p90':>7}  {'mean':>8}"
     )
@@ -373,7 +373,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    deploy = datetime.strptime(args.deploy, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    deploy = datetime.strptime(args.deploy, "%Y-%m-%d").replace(tzinfo=UTC)
     deploy_ms = int(deploy.timestamp() * 1000)
 
     if not DB_PATH.exists():

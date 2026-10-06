@@ -27,6 +27,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import queue
@@ -36,7 +37,7 @@ import sys
 import threading
 import time
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -197,7 +198,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
 _tls = threading.local()
 
 
-def get_encoder() -> "tiktoken.Encoding":
+def get_encoder() -> tiktoken.Encoding:
     enc = getattr(_tls, "enc", None)
     if enc is None:
         enc = tiktoken.get_encoding(TOKENIZER_NAME)
@@ -222,7 +223,7 @@ def batch_count_tokens(strings: list[str]) -> list[int]:
     nonempty = [strings[i] for i in nonempty_idx]
     encoded = enc.encode_ordinary_batch(nonempty, num_threads=4)
     out = [0] * len(strings)
-    for i, e in zip(nonempty_idx, encoded):
+    for i, e in zip(nonempty_idx, encoded, strict=False):
         out[i] = len(e)
     return out
 
@@ -426,10 +427,8 @@ def parse_hashline_input(input_str: str) -> list[EditSection]:
                 inline = ins.group("inline")
                 cur.op_anchors.append(anchor)
                 if anchor not in ("BOF", "EOF"):
-                    try:
+                    with contextlib.suppress(ValueError):
                         cur.touch(int(anchor))
-                    except ValueError:
-                        pass
                 open_idx = open_new(cur)
                 cur.op_count += 1
                 if inline:
@@ -791,7 +790,7 @@ def parse_file(
     if rec.pending_tokens:
         texts = [p[2] for p in rec.pending_tokens]
         tokens = batch_count_tokens(texts)
-        for (row, field_idx, _), n in zip(rec.pending_tokens, tokens):
+        for (row, field_idx, _), n in zip(rec.pending_tokens, tokens, strict=False):
             row[field_idx] = n
         rec.pending_tokens.clear()
     return rec
