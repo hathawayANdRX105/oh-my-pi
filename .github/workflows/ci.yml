@@ -515,9 +515,13 @@ jobs:
    # ahead of it: serially after the pair they held every test job back ~10
    # min on native-changing main pushes. Non-PR only, like rust_validate;
    # the build also keeps the remote cache warm for release runs.
+   # Fork release policy: only omp-linux-x64 ships, so nothing consumes the
+   # arm64/musl/win32 addons and this leg (the longest bazel build in the
+   # fan-out) stays off. Re-enable together with a non-linux release_binary
+   # matrix entry.
    native_addons_cross:
       name: Build native addons (bazel, cross targets)
-      if: github.event_name != 'pull_request'
+      if: false
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -733,7 +737,7 @@ jobs:
 
    # Terminal barrier: when this job succeeds, every validation job it
    # depends on is guaranteed settled. release_gate gates on this ONE result
-   # so its `if` never races on the long-pole native_addons_cross `.result`
+   # so its `if` never races on the long-pole native_addons `.result`
    # (GitHub can evaluate a job's `if` before a not-yet-settled long-pole
    # need is reflected, which silently skips the gate and blocks publishing).
    # Binary BUILDS deliberately do not wait for this gate — they run in
@@ -741,7 +745,7 @@ jobs:
    validation_barrier:
       name: Validation barrier
       if: ${{ !cancelled() }}
-      needs: [check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
+      needs: [check, rust_validate, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -762,18 +766,16 @@ jobs:
       steps:
          - run: echo "release validation green"
 
-   # Builds (does not publish) the Linux-hosted release binaries in parallel
-   # with the test fan-out; the needs are the two native_addons jobs, whose
-   # artifacts supply their addons. Native-host builds live in
-   # release_binary_hosted and start at release_metadata time instead.
-   # Publishing (npm leaves, GitHub release, core npm) is gated on
-   # release_gate downstream.
+   # Builds (does not publish) the linux-x64 release binary in parallel with
+   # the test fan-out; native_addons' artifact supplies its addon pair.
+   # Fork release policy: the matrix ships omp-linux-x64 only — the darwin,
+   # win32, musl, and arm64 legs and every consumer needing them are switched
+   # off below. Publishing is gated on release_gate downstream.
    release_binary:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.native_addons.result == 'success' &&
-         needs.native_addons_cross.result == 'success' }}
-      needs: [release_metadata, native_addons, native_addons_cross]
+         needs.native_addons.result == 'success' }}
+      needs: [release_metadata, native_addons]
       strategy:
          fail-fast: false
          matrix:
@@ -785,51 +787,6 @@ jobs:
                     target_id: linux-x64,
                     binary_path: packages/coding-agent/binaries/omp-linux-x64,
                     native_targets: linux-x64-baseline linux-x64-modern,
-                 }
-               - {
-                    os: ubuntu-22.04,
-                    platform: linux,
-                    libc: musl,
-                    arch: x64,
-                    target_id: linux-musl-x64,
-                    binary_path: packages/coding-agent/binaries/omp-linux-musl-x64,
-                    native_targets: linux-musl-x64-baseline,
-                 }
-               - {
-                    os: ubuntu-24.04-arm,
-                    platform: linux,
-                    arch: arm64,
-                    target_id: linux-arm64,
-                    binary_path: packages/coding-agent/binaries/omp-linux-arm64,
-                    native_targets: linux-arm64,
-                 }
-               - {
-                    os: ubuntu-24.04-arm,
-                    platform: linux,
-                    libc: musl,
-                    arch: arm64,
-                    target_id: linux-musl-arm64,
-                    binary_path: packages/coding-agent/binaries/omp-linux-musl-arm64,
-                    native_targets: linux-musl-arm64,
-                 }
-               - {
-                    os: ubuntu-22.04,
-                    platform: win32,
-                    arch: x64,
-                    target_id: win32-x64,
-                    binary_path: packages/coding-agent/binaries/omp-windows-x64.exe,
-                    native_targets: win32-x64-baseline,
-                 }
-               # Addon cross-built by Bazel (clang-cl + xwin arm64 splat) in
-               # native_addons_cross, binary cross-compiled by bun; the
-               # release_smoke_win32_arm64 job runs it on real hardware.
-               - {
-                    os: ubuntu-22.04,
-                    platform: win32,
-                    arch: arm64,
-                    target_id: win32-arm64,
-                    binary_path: packages/coding-agent/binaries/omp-windows-arm64.exe,
-                    native_targets: win32-arm64,
                  }
       runs-on: ${{ matrix.os }}
       permissions:
@@ -904,9 +861,10 @@ jobs:
    # macos-14: the smoke runs the x86_64 binary under Rosetta, and only
    # macOS 15's Rosetta translates the AVX2 the bun-darwin-x64 runtime uses
    # (macOS 14: "CPU lacks AVX support", SIGILL on --smoke-test).
+   # Fork release policy: darwin builds are off (linux-x64-only release).
    release_binary_hosted:
       name: "Release binary: ${{ matrix.target_id }}"
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() }}
+      if: false
       needs: [release_metadata]
       strategy:
          fail-fast: false
@@ -1019,10 +977,11 @@ jobs:
    # win32-arm64 is cross-built on Linux (addon: Bazel msvc arm64 toolchain;
    # binary: bun --compile); this runs it on real Windows ARM64 hardware
    # before anything publishes. Replaces the ~13-20 min native cargo leg.
+   # Fork release policy: no win32 binary is built, so there is nothing to
+   # smoke on Windows ARM64 hardware.
    release_smoke_win32_arm64:
       name: "Smoke release binary: win32-arm64"
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.release_binary.result == 'success' }}
+      if: false
       needs: [release_metadata, release_binary]
       runs-on: windows-11-arm
       permissions:
@@ -1151,10 +1110,8 @@ jobs:
       name: Publish GitHub release
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
          needs.release_gate.result == 'success' &&
-         needs.release_binary.result == 'success' &&
-         needs.release_binary_hosted.result == 'success' &&
-         needs.release_smoke_win32_arm64.result == 'success' }}
-      needs: [release_metadata, release_gate, release_binary, release_binary_hosted, release_smoke_win32_arm64]
+         needs.release_binary.result == 'success' }}
+      needs: [release_metadata, release_gate, release_binary]
       runs-on: ubuntu-22.04
       permissions:
          contents: write
@@ -1204,10 +1161,13 @@ jobs:
               body_path: release-notes.md
               generate_release_notes: true
 
+   # Fork release policy: this verifies the published darwin-arm64 binary,
+   # which a linux-x64-only release does not ship. Skipping it also keeps
+   # release_npm and release_brew (both gated on this job's success) skipped,
+   # so a fork release publishes only the GitHub release assets.
    release_github_verify:
       name: Verify published release (macOS)
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.release_github.result == 'success' }}
+      if: false
       needs: [release_metadata, release_github]
       runs-on: macos-14
       permissions:

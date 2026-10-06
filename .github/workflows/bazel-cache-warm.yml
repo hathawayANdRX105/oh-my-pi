@@ -69,9 +69,11 @@ jobs:
    # release's bazel build is the version-bump delta, not a cold graph. Scope,
    # runner image, and target must match the release_binary_hosted matrix in
    # ci.yml; the arm64 Xcode 27 build has a separate cache from macos-15 x64.
+   # Fork release policy: the darwin release legs are off (linux-x64-only
+   # release), so their cache scopes have no consumer.
    warm_darwin:
       name: "Seed darwin release bazel cache: ${{ matrix.target }}"
-      if: inputs.only == '' || inputs.only == 'darwin'
+      if: false
       strategy:
          fail-fast: false
          matrix:
