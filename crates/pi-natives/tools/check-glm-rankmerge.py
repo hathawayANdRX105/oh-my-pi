@@ -23,7 +23,7 @@ def unicode_to_bytes():
             bs.append(b)
             cs.append(256 + n)
             n += 1
-    return {chr(c): b for c, b in zip(cs, bs)}
+    return {chr(c): b for c, b in zip(cs, bs, strict=False)}
 
 
 INV = unicode_to_bytes()

@@ -13,8 +13,11 @@ target-version = "py311"
 # (会被 canon 命令的 CLI --exclude 整体覆盖, 脚手架排除失效)。
 extend-exclude = [
     "packages/snapcompact/research",
-    "scripts",
-    "crates/*/tools",
+    # 分析/回测脚手架: 含未定义名等真逻辑债(如 range_deleted_lines 只有 legacy_/new_
+    # 两个变体), 不宜在 lint 批次里猜修, 留待逻辑评审。
+    "scripts/session-stats",
+    # PEP695(3.12) 泛型语法, py311 目标下 parse 报 invalid-syntax, 单独排除
+    "scripts/tool_io.py",
     "**/eval",
     "**/bench",
     "**/test",
@@ -37,3 +40,12 @@ select = [
 
 [lint.pyupgrade]
 keep-runtime-typing = true
+
+# 非 shipped 分析/评测脚手架: 长 prompt / URL / 命令行字符串换行会改文本或命令本身,
+# 不强制 line-length。edit_benchmark_common 的 E402 是 import 必须排在 sys.path.insert
+# 之后(有意)。
+[lint.per-file-ignores]
+"scripts/rate-edit-tool.py" = ["E501"]
+"scripts/edit_benchmark_common.py" = ["E501", "E402"]
+"crates/pi-natives/tools/gen-deepseek-fixtures.py" = ["E501"]
+"crates/pi-natives/tools/gen-qwen-fixtures.py" = ["E501"]

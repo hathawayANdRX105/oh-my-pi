@@ -1132,9 +1132,8 @@ class ModelRunRecorder:
         )
 
     def _append_jsonl(self, payload: dict[str, Any]) -> None:
-        with self._event_lock:
-            with self.jsonl_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload) + "\n")
+        with self._event_lock, self.jsonl_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
 
 
 def run_model_sync(
