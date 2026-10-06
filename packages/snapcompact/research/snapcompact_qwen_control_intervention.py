@@ -82,7 +82,7 @@ def heat_color(t: float) -> tuple[int, int, int]:
         (0.82, (188, 255, 120)),
         (1.00, (255, 236, 128)),
     ]
-    for (a, ca), (b, cb) in zip(stops, stops[1:]):
+    for (a, ca), (b, cb) in zip(stops, stops[1:], strict=False):
         if t <= b:
             u = (t - a) / (b - a)
             return tuple(round(ca[i] + (cb[i] - ca[i]) * u) for i in range(3))
@@ -139,7 +139,7 @@ def carrier_map(
     )
     sims = []
     answer_cos = []
-    for text_h, image_h in zip(text_layers, image_layers):
+    for text_h, image_h in zip(text_layers, image_layers, strict=False):
         text_ans = text_h[text_pos["answer_start"] : text_pos["answer_end"]].mean(
             axis=0
         )
@@ -556,7 +556,7 @@ def main() -> None:
         model, processor, img, chunk, distractor, cols, rows, device
     )
 
-    peak_layer = primary_meta["peak_layer"]
+    primary_meta["peak_layer"]
     prompt = make_image_prompt(cols, rows, primary)
     patch_layer = 0
     generations = {

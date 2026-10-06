@@ -225,14 +225,14 @@ def qa_call(
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
     )
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": MODEL,

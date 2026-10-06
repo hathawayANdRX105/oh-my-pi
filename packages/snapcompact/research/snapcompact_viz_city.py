@@ -7,8 +7,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -56,7 +56,7 @@ def mix(
     a: tuple[int, int, int], b: tuple[int, int, int], t: float
 ) -> tuple[int, int, int]:
     t = max(0.0, min(1.0, t))
-    return tuple(clamp255(x + (y - x) * t) for x, y in zip(a, b))
+    return tuple(clamp255(x + (y - x) * t) for x, y in zip(a, b, strict=False))
 
 
 def shade(c: tuple[int, int, int], factor: float) -> tuple[int, int, int]:

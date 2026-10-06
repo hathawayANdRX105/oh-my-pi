@@ -475,8 +475,7 @@ ax.text(
     "data: results/qwen-carrier-convergence-n12 (carrier_convergence.npz \u00b7 summary.json)   \u00b7   "
     "carrier-centered cosine of hidden states, d = 3584, 29 layers   \u00b7   "
     "RSA = Pearson r over the 66 off-diagonal pairs   \u00b7   "
-    "diverging scale \u2212%.2f \u2026 +%.2f (cyan \u2192 dark \u2192 orange)"
-    % (VLIM, VLIM),
+    f"diverging scale \u2212{VLIM:.2f} \u2026 +{VLIM:.2f} (cyan \u2192 dark \u2192 orange)",
     color=MUTED,
     fontsize=9,
     ha="left",

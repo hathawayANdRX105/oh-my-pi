@@ -250,7 +250,7 @@ def run_cell(
             lambda: dict(
                 zip(
                     ("text", "usage", "stop"),
-                    llm_complete(keys, model, messages, max_tokens=args.max_tokens),
+                    llm_complete(keys, model, messages, max_tokens=args.max_tokens), strict=False,
                 )
             ),
             args.fresh,
@@ -279,7 +279,7 @@ def run_cell(
         lambda: dict(
             zip(
                 ("text", "usage", "stop"),
-                llm_complete(keys, model, prov_messages, max_tokens=args.max_tokens),
+                llm_complete(keys, model, prov_messages, max_tokens=args.max_tokens), strict=False,
             )
         ),
         args.fresh,
@@ -288,7 +288,7 @@ def run_cell(
     prov_answers = squad.parse_numbered(prov["text"], len(questions))
 
     records = []
-    for q, a, pa in zip(questions, answers, prov_answers):
+    for q, a, pa in zip(questions, answers, prov_answers, strict=False):
         gold_role = chunk["roles"][q["pi"]]
         scored = cond in QA_PROMPT
         records.append(
@@ -418,7 +418,7 @@ def main() -> None:
             pool.submit(run_cell, m, c, ln, ci, ch, args, keys)
             for m, c, ln, ci, ch in tasks
         ]
-        for done, (fut, t) in enumerate(zip(futures, tasks), 1):
+        for done, (fut, t) in enumerate(zip(futures, tasks, strict=False), 1):
             try:
                 records.extend(fut.result())
             except Exception as err:  # noqa: BLE001 -- partial results still get written; rerun resumes from cache

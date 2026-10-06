@@ -43,7 +43,7 @@ import squad  # noqa: E402
 from bdf import capacity, render  # noqa: E402
 from final import ACK, cached, session_frame  # noqa: E402
 from providers import llm_complete, load_env_key  # noqa: E402
-from run import CACHE, QA_CACHE, RESULTS, FONTS, agent_prompt, load_prompt, sha8  # noqa: E402
+from run import CACHE, FONTS, QA_CACHE, RESULTS, agent_prompt, load_prompt, sha8  # noqa: E402
 
 MODELS = {"gpt-5.5": (2.0, 16.0), "google/gemini-3.5-flash": (0.6, 4.0)}
 FONT = "6x10"
@@ -158,13 +158,13 @@ def score_records(
             "f1": squad.f1(a, q["golds"]),
             "abstained": "unreadable" in a.lower(),
         }
-        for q, a in zip(questions, answers)
+        for q, a in zip(questions, answers, strict=False)
     ]
 
 
 def common_prefix_len(a: str, b: str) -> int:
     n = 0
-    for x, y in zip(a, b):
+    for x, y in zip(a, b, strict=False):
         if x != y:
             break
         n += 1
@@ -447,7 +447,7 @@ def main() -> None:
         "pages": pages,
     }
     with ThreadPoolExecutor(min(2, len(models))) as pool:
-        results = dict(zip(models, pool.map(lambda m: run_model(m, ctx), models)))
+        results = dict(zip(models, pool.map(lambda m: run_model(m, ctx), models), strict=False))
 
     records = [r for m in models for r in results[m]["records"]]
     steps = [s for m in models for s in results[m]["steps"]]

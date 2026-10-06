@@ -41,8 +41,8 @@ sys.path.insert(0, str(HERE))
 import squad  # noqa: E402
 from bdf import (
     _DIMMED,
-    _stopword_mask,
     FontCfg,
+    _stopword_mask,
     capacity,
     ensure_font,
     parse_bdf,
@@ -199,10 +199,7 @@ def render_doc(lines: list[dict], cfg: FontCfg, size: int, cache: Path) -> Image
             glyph = glyphs.get(ord(ch))
             if glyph is None:
                 continue
-            if ln["kind"] == "heading":
-                fg = _BLACK
-            else:
-                fg = _DIMMED if masks[li][ci] else _BLACK
+            fg = _BLACK if ln["kind"] == "heading" else _DIMMED if masks[li][ci] else _BLACK
             w, h, xoff, yoff = glyph["bbx"]
             top = y0 + ascent - h - yoff
             shift = 0x80 if w <= 8 else 0x8000
@@ -238,7 +235,7 @@ def qa_call(cond: str, messages: list[dict], ctx: dict) -> dict:
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
@@ -250,7 +247,7 @@ def score(
 ) -> list[dict]:
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": MODEL,

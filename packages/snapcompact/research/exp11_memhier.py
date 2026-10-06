@@ -97,7 +97,7 @@ def gen_summary(
                     ],
                     system=agent_prompt("summarization-system.md"),
                     max_tokens=max_tokens,
-                ),
+                ), strict=False,
             )
         ),
         fresh,
@@ -178,7 +178,7 @@ def run_chunk(model: str, cond: str, start: int, end: int, cell: dict) -> list[d
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
@@ -186,7 +186,7 @@ def run_chunk(model: str, cond: str, start: int, end: int, cell: dict) -> list[d
     answers = squad.parse_numbered(qa["text"], len(questions))
     b1, b2 = cell["bounds"]
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         pos_abs = start + q["pos_rel"] * (end - start)
         tier = "L1" if pos_abs >= b2 else ("L2" if pos_abs >= b1 else "L3")
         records.append(

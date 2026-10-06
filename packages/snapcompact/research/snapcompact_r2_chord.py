@@ -19,8 +19,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.path import Path as MplPath
 from matplotlib.patches import PathPatch
+from matplotlib.path import Path as MplPath
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "results", "qwen-carrier-convergence-n12")
@@ -204,7 +204,7 @@ for i, j in order:
 
 # ---------------------------------------------------------------- node bands
 for i in range(n):
-    for centers, color, side in (
+    for centers, color, _side in (
         (left_centers, CYAN, "L"),
         (right_centers, ORANGE, "R"),
     ):

@@ -12,7 +12,6 @@ target-version = "py311"
 # 用 extend-exclude(与 CLI 的 --exclude .githooks 叠加), 不用顶层 exclude
 # (会被 canon 命令的 CLI --exclude 整体覆盖, 脚手架排除失效)。
 extend-exclude = [
-    "packages/snapcompact/research",
     # 分析/回测脚手架: 含未定义名等真逻辑债(如 range_deleted_lines 只有 legacy_/new_
     # 两个变体), 不宜在 lint 批次里猜修, 留待逻辑评审。
     "scripts/session-stats",
@@ -45,3 +44,6 @@ keep-runtime-typing = true
 "scripts/edit_benchmark_common.py" = ["E501", "E402"]
 "crates/pi-natives/tools/gen-deepseek-fixtures.py" = ["E501"]
 "crates/pi-natives/tools/gen-qwen-fixtures.py" = ["E501"]
+# 研究/实验脚手架(snapcompact/research): ad-hoc 分析脚本, 长行/循环变量/延迟 import
+# 等风格规则不适用, 只保留 F(pyflakes 真·bug)等实质检查; 风格规则按文件豁免。
+"packages/snapcompact/research/**/*.py" = ["E501", "E402", "B023", "E741", "B007"]

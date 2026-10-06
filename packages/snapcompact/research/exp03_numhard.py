@@ -60,13 +60,10 @@ def number_mask(text: str) -> list[bool]:
     """True for digits and number/date punctuation directly adjacent to a digit."""
     mask = [False] * len(text)
     for i, ch in enumerate(text):
-        if ch.isdigit():
+        if ch.isdigit() or ch in _NUM_PUNCT and ((i > 0 and text[i - 1].isdigit()) or (
+            i + 1 < len(text) and text[i + 1].isdigit()
+        )):
             mask[i] = True
-        elif ch in _NUM_PUNCT:
-            if (i > 0 and text[i - 1].isdigit()) or (
-                i + 1 < len(text) and text[i + 1].isdigit()
-            ):
-                mask[i] = True
     return mask
 
 
@@ -169,14 +166,14 @@ def run_chunk(model: str, cond: str, start: int, end: int, ctx: dict) -> list[di
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
     )
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,

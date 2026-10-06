@@ -180,7 +180,7 @@ def run_cell_chunk(
             lambda: dict(
                 zip(
                     ("items", "usage"),
-                    openai_compact(keys["openai"], model, session_frame(chunk_text)),
+                    openai_compact(keys["openai"], model, session_frame(chunk_text)), strict=False,
                 )
             ),
             args.fresh,
@@ -223,7 +223,7 @@ def run_cell_chunk(
                         ],
                         system=agent_prompt("summarization-system.md"),
                         max_tokens=args.max_tokens,
-                    ),
+                    ), strict=False,
                 )
             ),
             args.fresh,
@@ -263,7 +263,7 @@ def run_cell_chunk(
                     max_tokens=args.max_tokens,
                     effort=args.effort,
                     extra_input_items=extra_items,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
@@ -271,7 +271,7 @@ def run_cell_chunk(
     usage_rows.append(("qa", qa["usage"]))
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,

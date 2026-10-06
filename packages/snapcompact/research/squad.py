@@ -115,14 +115,14 @@ def parse_numbered(text: str, n: int) -> list[str]:
 
 
 def score(answers: list[str], questions: list[dict]) -> dict:
-    ems = [exact_match(a, q["golds"]) for a, q in zip(answers, questions)]
-    f1s = [f1(a, q["golds"]) for a, q in zip(answers, questions)]
+    ems = [exact_match(a, q["golds"]) for a, q in zip(answers, questions, strict=False)]
+    f1s = [f1(a, q["golds"]) for a, q in zip(answers, questions, strict=False)]
     return {
         "em": sum(ems) / len(ems),
         "f1": sum(f1s) / len(f1s),
         "abstained": sum("unreadable" in a.lower() for a in answers),
         "per_question": [
             {"answer": a, "golds": q["golds"], "em": e, "f1": f}
-            for a, q, e, f in zip(answers, questions, ems, f1s)
+            for a, q, e, f in zip(answers, questions, ems, f1s, strict=False)
         ],
     }

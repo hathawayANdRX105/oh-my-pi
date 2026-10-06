@@ -118,9 +118,7 @@ _REP_DARK = (44, 44, 24)
 # High-frequency function words a reader can reconstruct from context; the dim
 # variants render them in light gray so content words carry the contrast.
 _STOPWORDS = frozenset(
-    "the a an and or of to in on at as is are was were be been by for with that this it its from had has have not but "
-    "he she his her they their them which also who whom when where while will would could should there then than "
-    "into over under about after before between during each such these those some most more other only same so".split()
+    ["the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "as", "is", "are", "was", "were", "be", "been", "by", "for", "with", "that", "this", "it", "its", "from", "had", "has", "have", "not", "but", "he", "she", "his", "her", "they", "their", "them", "which", "also", "who", "whom", "when", "where", "while", "will", "would", "could", "should", "there", "then", "than", "into", "over", "under", "about", "after", "before", "between", "during", "each", "such", "these", "those", "some", "most", "more", "other", "only", "same", "so"]
 )
 
 

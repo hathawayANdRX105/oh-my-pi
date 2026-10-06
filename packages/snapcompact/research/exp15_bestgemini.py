@@ -34,11 +34,11 @@ import squad  # noqa: E402
 from bdf import (
     _DARK,
     _DIMMED,
-    _stopword_mask,
     FontCfg,
+    _stopword_mask,
     capacity,
-    parse_bdf,
     ensure_font,
+    parse_bdf,
     render,
 )  # noqa: E402
 from providers import llm_complete, load_env_key  # noqa: E402
@@ -223,14 +223,14 @@ def _qa_call(
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
     )
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,
@@ -558,7 +558,7 @@ def main() -> None:
     )
     with (OUT_DIR / "matrix.csv").open("w", newline="") as fh:
         writer = csv.DictWriter(
-            fh, fieldnames=[k for k in cells[0].keys() if k != "doc_chars_page"]
+            fh, fieldnames=[k for k in cells[0] if k != "doc_chars_page"]
         )
         writer.writeheader()
         writer.writerows(cells)

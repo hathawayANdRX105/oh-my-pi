@@ -208,7 +208,7 @@ def run_grid_chunk(
     model: str, cond: str, start: int, end: int, ctx: dict
 ) -> list[dict]:
     """One row-major-grid chunk: render via bdf.render, QA, score."""
-    args, flow, paras, offsets, keys = (
+    args, flow, paras, offsets, _keys = (
         ctx["args"],
         ctx["flow"],
         ctx["paras"],
@@ -232,7 +232,7 @@ def run_grid_chunk(
 
 def run_doc_page(model: str, cond: str, page: tuple[int, int], ctx: dict) -> list[dict]:
     """One doc-layout page: typeset, render, QA, score."""
-    args, paras, offsets, keys = ctx["args"], ctx["paras"], ctx["offsets"], ctx["keys"]
+    args, paras, offsets, _keys = ctx["args"], ctx["paras"], ctx["offsets"], ctx["keys"]
     i, j = page
     start = offsets[i]
     end = offsets[j - 1] + len(paras[j - 1]["ctx"])
@@ -308,14 +308,14 @@ def qa_and_score(
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
     )
     answers = parse_answers(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,
@@ -430,7 +430,7 @@ def main() -> None:
         capacity_stats[length] = {
             "corpus_chars": len(flow),
             "grid": {
-                fk: dict(zip(("cols", "rows", "chars"), capacity(FONTS[fk], args.size)))
+                fk: dict(zip(("cols", "rows", "chars"), capacity(FONTS[fk], args.size), strict=False))
                 for fk in FONTS
             },
             "doc": doc_stats,

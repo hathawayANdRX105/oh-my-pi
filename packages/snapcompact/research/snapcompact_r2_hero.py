@@ -546,7 +546,7 @@ def draw_stats_strip(ov: ImageDraw.ImageDraw, stats):
     centers = [500, 1200, 1900]
     f_num = display_font(66)
     f_cap = label_font(21)
-    for (num, cap, color), cx in zip(groups, centers):
+    for (num, cap, color), cx in zip(groups, centers, strict=False):
         nw = ov.textlength(num, font=f_num)
         ov.text((u(cx) - nw / 2, u(1024)), num, font=f_num, fill=color)
         cw = tracked_width(ov, cap, f_cap, 3)

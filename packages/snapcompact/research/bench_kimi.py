@@ -31,7 +31,7 @@ sys.path.insert(0, str(HERE))
 import squad  # noqa: E402
 from final import MODELS, cached  # noqa: E402
 from mono_prod import SHAPES  # noqa: E402
-from providers import _png_b64, _post, load_env_key, llm_complete  # noqa: E402
+from providers import _png_b64, _post, llm_complete, load_env_key  # noqa: E402
 from run import CACHE, RESULTS, load_prompt, sha8  # noqa: E402
 
 DEFAULT_MODEL = "moonshotai/kimi-k2.6"
@@ -226,17 +226,17 @@ def main() -> None:
                     ("text", "usage", "stop"),
                     llm_complete(
                         keys, args.model, m, max_tokens=args.max_tokens, effort=None
-                    ),
+                    ), strict=False,
                 )
             )
         else:
             fn = lambda m=messages: dict(  # noqa: E731
-                zip(("text", "usage", "stop"), fireworks_complete(m, args.max_tokens))
+                zip(("text", "usage", "stop"), fireworks_complete(m, args.max_tokens), strict=False)
             )
         qa = cached(
             args.model, tag, {"messages": messages, "effort": None}, fn, args.fresh
         )
-        for q, a in zip(qs, squad.parse_numbered(qa["text"], len(qs))):
+        for q, a in zip(qs, squad.parse_numbered(qa["text"], len(qs)), strict=False):
             answers_by_q[q["q"]] = a
         usages.append(qa["usage"])
         stops.append(qa["stop"])

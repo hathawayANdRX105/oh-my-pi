@@ -132,7 +132,7 @@ def main() -> None:
                             m,
                             max_tokens=args.max_tokens,
                             effort=args.effort,
-                        ),
+                        ), strict=False,
                     )
                 ),
                 args.fresh,
@@ -152,7 +152,7 @@ def main() -> None:
                 "f1": squad.f1(a, q["golds"]),
                 "abstained": "unreadable" in a.lower(),
             }
-            for q, a in zip(questions, answers)
+            for q, a in zip(questions, answers, strict=False)
         ]
         records.extend(
             {**r, "usage": usages} if i == 0 else r for i, r in enumerate(rows)

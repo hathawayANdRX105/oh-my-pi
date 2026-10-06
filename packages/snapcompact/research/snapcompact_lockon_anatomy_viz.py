@@ -14,9 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 from pathlib import Path
-from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -296,7 +294,7 @@ def main() -> None:
         card_ys[i] = min(desired[i], card_ys[i + 1] - card_h - gap)
     shift = max(0, 440 - card_ys[0])
     card_ys = [cy + shift for cy in card_ys]
-    for layer, cy in zip(samples, card_ys):
+    for layer, cy in zip(samples, card_ys, strict=False):
         entry = layers[layer]
         is_lock = layer == lock_on
         accent = (
@@ -332,7 +330,7 @@ def main() -> None:
             draw.ellipse((tx - 8, cy + 14, tx + 4, cy + 26), outline=accent, width=3)
         bx = card_x + 20
         by = cy + 44
-        for k, t in enumerate(entry["best_token_top"]):
+        for _k, t in enumerate(entry["best_token_top"]):
             label = t["str"].strip() or "␣"
             if len(label) > 9:
                 label = label[:8] + "…"

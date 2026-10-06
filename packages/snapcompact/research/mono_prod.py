@@ -288,7 +288,7 @@ def main() -> None:
                         m,
                         max_tokens=args.max_tokens,
                         effort=args.effort,
-                    ),
+                    ), strict=False,
                 )
             ),
             args.fresh,
@@ -308,7 +308,7 @@ def main() -> None:
             "f1": squad.f1(a, q["golds"]),
             "abstained": "unreadable" in a.lower(),
         }
-        for q, a in zip(questions, answers)
+        for q, a in zip(questions, answers, strict=False)
     ]
     u = {
         k: sum(x[k] for x in usages)

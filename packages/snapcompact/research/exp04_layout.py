@@ -24,10 +24,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import squad  # noqa: E402
-from bdf import _DARK, capacity, parse_bdf, ensure_font  # noqa: E402
+from bdf import _DARK, capacity, ensure_font, parse_bdf  # noqa: E402
+from final import cached  # noqa: E402
 from providers import llm_complete, load_env_key  # noqa: E402
 from run import CACHE, FONTS, QA_CACHE, RESULTS, load_prompt, sha8  # noqa: E402
-from final import cached  # noqa: E402
 
 MODELS = {"gpt-5.5": (2.0, 16.0), "google/gemini-3.5-flash": (0.6, 4.0)}
 LENGTHS = (50, 150)
@@ -215,14 +215,14 @@ def run_page(model: str, cond: str, page: tuple[int, int], ctx: dict) -> list[di
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
     )
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,
