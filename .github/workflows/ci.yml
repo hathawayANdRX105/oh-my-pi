@@ -88,6 +88,14 @@ env:
    # several cases (model-registry refresh, session fork, credential bridge)
    # over the 30 s default; 120 s still catches a real hang.
    OMP_TEST_TIMEOUT: "120"
+   # CI must not use sccache: .cargo/config.toml sets rustc-wrapper="sccache"
+   # for local dev, but fresh GitHub-hosted runners (PRs, and post-#14 main
+   # push) have no sccache, so `cargo fetch`/cargo-deny and the bazel-rust
+   # legs fail with "could not execute sccache ... No such file or directory".
+   # An empty RUSTC_WRAPPER overrides the config wrapper (cargo treats an empty
+   # value as "no wrapper"); local dev keeps sccache because its shell leaves
+   # RUSTC_WRAPPER unset, so the config default still applies there.
+   RUSTC_WRAPPER: ""
 
 permissions:
    contents: read
