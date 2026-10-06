@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
-from pathlib import Path
 import json
 import random
 import time
-from typing import Any, Literal
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Generic, Literal, TypeVar
 
 LimitMode = Literal["calls", "events"]
 
@@ -115,8 +115,9 @@ class ToolInvocation:
         return diff if isinstance(diff, str) else None
 
 
+T = TypeVar("T")
 @dataclass(slots=True)
-class ReservoirSample[T]:
+class ReservoirSample(Generic[T]):
     size: int
     items: list[T] = field(default_factory=list)
     seen: int = 0
@@ -276,7 +277,7 @@ def take(stream: Iterable[ToolInvocation], limit: int) -> Iterator[ToolInvocatio
         remaining -= 1
 
 
-def sample_reservoir[T](
+def sample_reservoir(
     stream: Iterable[T], size: int, seed: int | None = None
 ) -> list[T]:
     sample: ReservoirSample[T] = ReservoirSample(size=size, rng=random.Random(seed))
