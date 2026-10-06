@@ -33,11 +33,12 @@ import asyncio
 import base64
 import builtins
 import codecs
+import contextlib
 import contextvars
+import hashlib
 import inspect
 import io
 import json
-import hashlib
 import linecache
 import locale
 import os
@@ -51,8 +52,9 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Frame writer
@@ -420,7 +422,7 @@ def _shadow_expression(
         )
     if isinstance(node, ast.Dict):
         entries: list[dict[str, Any]] = []
-        for key, value in zip(node.keys, node.values):
+        for key, value in zip(node.keys, node.values, strict=False):
             if not isinstance(key, ast.Constant) or type(key.value) is not str:
                 return None
             projected = _shadow_expression(value, environment, snapshot)
@@ -462,20 +464,19 @@ def _shadow_expression(
             and _shadow_expression_is_string(right)
             else None
         )
-    if isinstance(node, ast.Call) and not node.keywords:
-        if (
-            isinstance(node.func, ast.Name)
-            and node.func.id == "str"
-            and node.func.id not in environment
-            and (snapshot is None or "str" not in snapshot)
-            and len(node.args) == 1
-        ):
-            projected = _shadow_expression(node.args[0], environment, snapshot)
-            return (
-                {"kind": "transform", "name": "Python.str", "input": projected}
-                if projected is not None
-                else None
-            )
+    if isinstance(node, ast.Call) and not node.keywords and (
+        isinstance(node.func, ast.Name)
+        and node.func.id == "str"
+        and node.func.id not in environment
+        and (snapshot is None or "str" not in snapshot)
+        and len(node.args) == 1
+    ):
+        projected = _shadow_expression(node.args[0], environment, snapshot)
+        return (
+            {"kind": "transform", "name": "Python.str", "input": projected}
+            if projected is not None
+            else None
+        )
     return None
 
 
@@ -999,7 +1000,8 @@ def transform_cell(source: str) -> str:
                 call = "__omp_magic_async" if name == "load" else "__omp_magic"
                 prefix = "await " if name == "load" else ""
                 out.append(
-                    f"{m.group('indent')}{m.group('lhs').rstrip()} = {prefix}{call}({_quote_arg(name)}, {_quote_arg(args)})"
+                    f"{m.group('indent')}{m.group('lhs').rstrip()} = {prefix}{call}("
+                    f"{_quote_arg(name)}, {_quote_arg(args)})"
                 )
                 i += 1
                 continue
@@ -1802,9 +1804,8 @@ def _cell_binds_call_site_helper(module: ast.Module) -> bool:
         elif isinstance(node, ast.alias):
             if node.asname == _CALL_SITE_HELPER_NAME:
                 return True
-        elif isinstance(node, ast.ExceptHandler):
-            if node.name == _CALL_SITE_HELPER_NAME:
-                return True
+        elif isinstance(node, ast.ExceptHandler) and node.name == _CALL_SITE_HELPER_NAME:
+            return True
     return False
 
 class _ShadowCallSiteTransformer(ast.NodeTransformer):
@@ -1876,10 +1877,8 @@ def _prepare_file_source(
     ns["__file__"] = filename
     script_dir = os.path.dirname(filename)
     if script_dir:
-        try:
+        with contextlib.suppress(ValueError):
             sys.path.remove(script_dir)
-        except ValueError:
-            pass
         sys.path.insert(0, script_dir)
 
 
@@ -1926,18 +1925,14 @@ async def _exec_source_async(
 
 
 def _install_idle_sigint() -> None:
-    try:
+    # Some platforms (Windows in non-console mode) reject this; fine.
+    with contextlib.suppress(OSError, ValueError):
         signal.signal(signal.SIGINT, signal.SIG_IGN)
-    except (OSError, ValueError):
-        # Some platforms (Windows in non-console mode) reject this; fine.
-        pass
 
 
 def _install_exec_sigint() -> None:
-    try:
+    with contextlib.suppress(OSError, ValueError):
         signal.signal(signal.SIGINT, signal.default_int_handler)
-    except (OSError, ValueError):
-        pass
 
 
 def _begin_exec_sigint() -> None:
@@ -1966,10 +1961,8 @@ def _apply_request_runtime(req: dict) -> None:
     cwd = req.get("cwd")
     if isinstance(cwd, str) and cwd:
         os.chdir(cwd)
-        try:
+        with contextlib.suppress(ValueError):
             sys.path.remove(cwd)
-        except ValueError:
-            pass
         sys.path.insert(0, cwd)
 
     env = req.get("env")
@@ -2153,10 +2146,8 @@ async def _handle_request_async(req: dict) -> None:
             _emit_error(rid, exc, source_filename=filename)
         finally:
             _end_exec_sigint()
-            try:
+            with contextlib.suppress(Exception):
                 _flush_matplotlib_figures()
-            except Exception:
-                pass
 
         _flush_stream_proxies(rid)
         _emit(

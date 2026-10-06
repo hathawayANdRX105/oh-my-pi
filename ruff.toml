@@ -18,10 +18,6 @@ extend-exclude = [
     "scripts/session-stats",
     # PEP695(3.12) 泛型语法, py311 目标下 parse 报 invalid-syntax, 单独排除
     "scripts/tool_io.py",
-    "**/eval",
-    "**/bench",
-    "**/test",
-    "**/tests",
     "**/native",
 ]
 
