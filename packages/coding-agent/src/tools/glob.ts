@@ -13,6 +13,7 @@ import { isScoutSpawnable } from "../task/spawn-policy";
 import type { ToolSession } from ".";
 import { resolveToolTier } from "./approval";
 import { isFindEnabled } from "./jfind";
+import { isCodegraphEnabled } from "./codegraph";
 import { applyListLimit } from "@oh-my-pi/pi-tui/tools/list-limit";
 import {
 	expandDelimitedPathEntries,
@@ -91,6 +92,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 	get description(): string {
 		return prompt.render(globDescription, {
 			hasFind: this.session.isToolActive?.("find") ?? isFindEnabled(this.session),
+			hasCodegraph: this.session.isToolActive?.("codegraph") ?? isCodegraphEnabled(this.session),
 			eagerDelegation: sessionDelegationBias(this.session) === "eager",
 			scoutAvailable: isScoutSpawnable(
 				cfgTaskDisabledAgents.get(this.session.settings),

@@ -533,6 +533,33 @@ export const cfgFindEnabled = register({
 	},
 });
 
+export const cfgCodegraphEnabled = register({
+	id: "codegraph.enabled",
+	type: "enum",
+	values: ["auto", "on", "off"] as const,
+	default: "auto",
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Codegraph",
+		description:
+			"Enable the codegraph tool: structural queries (callers, impact, affected tests) over a local codegraph index. Auto enables it only when a .codegraph index exists at or above the working directory",
+		options: [
+			{
+				value: "auto",
+				label: "Auto",
+				description: "Enable when a .codegraph index is found at or above the working directory",
+			},
+			{
+				value: "on",
+				label: "On",
+				description: "Always enable; without an index the tool errors with setup guidance",
+			},
+			{ value: "off", label: "Off", description: "Disable the codegraph tool" },
+		],
+	},
+});
+
 // Optional tools
 
 export const cfgDebugEnabled = register({
@@ -1000,6 +1027,7 @@ export const cfgBuiltinToolGates = combine({
 	autolearn: cfgAutolearnEnabled,
 	bash: cfgBashEnabled,
 	checkpoint: cfgCheckpointEnabled,
+	codegraph: cfgCodegraphEnabled,
 	contextManagement: cfgCompactionExperimentalContextManagement,
 	debug: cfgDebugEnabled,
 	evalJs: cfgEvalJs,
