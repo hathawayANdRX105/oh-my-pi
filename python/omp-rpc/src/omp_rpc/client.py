@@ -438,7 +438,8 @@ class _PromptLifecycleCoordinator:
         with self.lock:
             if self.active_operation is not None:
                 raise RpcConcurrencyError(
-                    f"Cannot start {operation} while {self.active_operation} is collecting prompt lifecycle events"
+                    f"Cannot start {operation} while {self.active_operation} is "
+                    f"already collecting prompt lifecycle events"
                 )
             self.active_operation = operation
 
