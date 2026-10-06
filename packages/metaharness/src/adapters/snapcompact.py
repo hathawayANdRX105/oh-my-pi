@@ -243,7 +243,7 @@ def run_chunk(cond: dict, start: int, end: int, ctx_args: dict) -> list[dict]:
         usage_rows.append(("qa", usage))
         answers.extend(squad.parse_numbered(text, len(batch)))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "cond": cond["name"],
@@ -417,21 +417,20 @@ def main() -> None:
     }
     records: list[dict] = []
     done = 0
-    with (run_dir / "records.jsonl").open("w") as records_file:
-        with ThreadPoolExecutor(args.workers) as pool:
-            futures = [
-                pool.submit(run_chunk, cond, start, end, ctx_args)
-                for cond, start, end in tasks
-            ]
-            for fut in futures:
-                chunk_records = fut.result()
-                records.extend(chunk_records)
-                for record in chunk_records:
-                    records_file.write(json.dumps(record) + "\n")
-                records_file.flush()
-                done += 1
-                if done % 20 == 0:
-                    print(f"  {done}/{len(tasks)} chunks", flush=True)
+    with (run_dir / "records.jsonl").open("w") as records_file, ThreadPoolExecutor(args.workers) as pool:
+        futures = [
+            pool.submit(run_chunk, cond, start, end, ctx_args)
+            for cond, start, end in tasks
+        ]
+        for fut in futures:
+            chunk_records = fut.result()
+            records.extend(chunk_records)
+            for record in chunk_records:
+                records_file.write(json.dumps(record) + "\n")
+            records_file.flush()
+            done += 1
+            if done % 20 == 0:
+                print(f"  {done}/{len(tasks)} chunks", flush=True)
 
     rows = [
         aggregate(

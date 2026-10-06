@@ -1,0 +1,39 @@
+# 全仓统一 ruff 基准。
+# canon `code_python` 清单跑 `ruff check --no-cache --exclude .githooks` 时自动发现本文件。
+# 目的: 把 ruff 0.16 无 config 时默认套用的巨宽规则集收敛到一套可控、可清理的基线,
+# 避免全仓 2000+ 存量 finding 长期挡 pre-push。
+# 子包若有自己的 [tool.ruff] 就近覆盖 —— robomp 那份已对齐到 line 120 / py311。
+
+line-length = 120
+target-version = "py311"
+
+# 脚手架/工具/实验目录的存量 ruff 债按目录分批 PR 清理, 清完一批就把对应项从本
+# extend-exclude 移除(恢复到全量 lint), 最终解阻 pre-push 后全量门。
+# 用 extend-exclude(与 CLI 的 --exclude .githooks 叠加), 不用顶层 exclude
+# (会被 canon 命令的 CLI --exclude 整体覆盖, 脚手架排除失效)。
+extend-exclude = [
+    "packages/snapcompact/research",
+    "scripts",
+    "crates/*/tools",
+    "**/eval",
+    "**/bench",
+    "**/test",
+    "**/tests",
+    "**/native",
+]
+
+[lint]
+# 收敛的基线: PEP8 + pyflakes(未用/未定义) + import 排序 + pyupgrade + bugbear + 简化。
+# 有意不开 ALL: 全规则套在研究/eval/脚本脚手架上会产生数百条与 shipped 无关的噪音。
+select = [
+    "E",    # pycodestyle (error)
+    "W",    # pycodestyle (warning)
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+]
+
+[lint.pyupgrade]
+keep-runtime-typing = true

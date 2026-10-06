@@ -12,16 +12,14 @@ import re
 import signal
 import sys
 import traceback
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout, suppress
 
 # Keep a private handle on the real stdout for protocol frames, then point fd 1 at stderr so
 # kernel messages and stray prints can never corrupt the NDJSON stream.
 _proto = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
 os.dup2(2, 1)
-try:
+with suppress(AttributeError, ValueError):
     sys.stdin.reconfigure(encoding="utf-8")
-except (AttributeError, ValueError):
-    pass
 
 import idapro  # noqa: E402,F401  (loads libidalib before any ida_* module)
 
@@ -39,9 +37,9 @@ def _arm_sigint():
 
 
 _arm_sigint()
-import ida_domain  # noqa: E402
 import ida_auto  # noqa: E402
 import ida_bytes  # noqa: E402
+import ida_domain  # noqa: E402
 import ida_funcs  # noqa: E402
 import ida_hexrays  # noqa: E402
 import ida_idaapi  # noqa: E402
@@ -418,7 +416,8 @@ def _view_overview():
     ]
     for s in segs:
         lines.append(
-            f"  {ida_segment.get_segm_name(s)} 0x{s.start_ea:x}-0x{s.end_ea:x} {_perm(s)} {ida_segment.get_segm_class(s)}"
+            f"  {ida_segment.get_segm_name(s)} 0x{s.start_ea:x}-0x{s.end_ea:x} {_perm(s)}"
+            f" {ida_segment.get_segm_class(s)}"
         )
     lines.append(f"entry points ({len(entries)}):")
     for e in entries[:_OVERVIEW_ENTRY_LIMIT]:
