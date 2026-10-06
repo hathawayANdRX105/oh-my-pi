@@ -16,7 +16,7 @@ import json
 import re
 import sqlite3
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -299,9 +299,7 @@ def detect_signals(
         if ev is None:
             continue
         marker_evidence.append(ev)
-        if strategy == "marker":
-            signals.append(Signal(ev.label, ev.start, ev.end, text[ev.start : ev.end]))
-        elif len(ev.classes) > 1:
+        if strategy == "marker" or len(ev.classes) > 1:
             signals.append(Signal(ev.label, ev.start, ev.end, text[ev.start : ev.end]))
 
     if strategy == "tail":
@@ -394,7 +392,7 @@ def parse_legacy_diff_boundary(text: str, *, loose_tail: bool = False) -> EditBo
         dele = old_delete.match(line)
         if dele:
             cur.op_count += 1
-            cur.deleted_lines += range_deleted_lines(dele.group("range"))
+            cur.deleted_lines += legacy_range_deleted_lines(dele.group("range"))
             parsed_end = end
             in_payload = False
             continue
@@ -403,7 +401,7 @@ def parse_legacy_diff_boundary(text: str, *, loose_tail: bool = False) -> EditBo
         if repl:
             cur.op_count += 1
             if repl.group("op") == "=":
-                cur.deleted_lines += range_deleted_lines(repl.group("range"))
+                cur.deleted_lines += legacy_range_deleted_lines(repl.group("range"))
             if repl.group("tail"):
                 cur.payload_lines += 1
             parsed_end = end
@@ -546,13 +544,17 @@ def parse_edit_boundary(text: str, *, legacy_loose_tail: bool = False) -> EditBo
             # New format: payload lines are anything that does not start a new
             # op or header. `↑`/`↓`/`:` ops may be followed by additional
             # payload lines; `!` ops are self-contained.
-            if payload_allowed and not line.startswith(new_payload_blockers):
-                # Re-check whether the line itself is an op — an op line ends
-                # the current payload run and starts a new op.
-                if not NEW_INSERT_RE.match(line) and not NEW_RANGE_RE.match(line):
-                    cur.payload_lines += 1
-                    parsed_end = end
-                    continue
+            # Re-check whether the line itself is an op — an op line ends the
+            # current payload run and starts a new op.
+            if (
+                payload_allowed
+                and not line.startswith(new_payload_blockers)
+                and not NEW_INSERT_RE.match(line)
+                and not NEW_RANGE_RE.match(line)
+            ):
+                cur.payload_lines += 1
+                parsed_end = end
+                continue
 
             if not stripped:
                 parsed_end = end
@@ -1017,13 +1019,15 @@ def print_examples(results: list[ToolBacktest], show: int) -> None:
     abort_examples = [r for r in results if r.action == "abort_replay"]
     for r in abort_examples[:show]:
         print(
-            f"\n[id={r.row_id} tool={r.tool_name} surface={r.surface} seq={r.seq} model={r.model} signals={signal_summary(r.signals)}]"
+            f"\n[id={r.row_id} tool={r.tool_name} surface={r.surface} seq={r.seq} "
+            f"model={r.model} signals={signal_summary(r.signals)}]"
         )
         print(f"session: {r.session_file}")
         if r.tool_name == "edit":
             print(
                 f"parse={r.parse_reason} parsed_end={r.parsed_end} text_len={r.text_len} "
-                f"ops={r.edit_ops} payload={r.edit_payload_lines} files={', '.join(r.edit_files) if r.edit_files else '<none>'}"
+                f"ops={r.edit_ops} payload={r.edit_payload_lines} "
+                f"files={', '.join(r.edit_files) if r.edit_files else '<none>'}"
             )
         print(f"context: {r.context_preview}")
 

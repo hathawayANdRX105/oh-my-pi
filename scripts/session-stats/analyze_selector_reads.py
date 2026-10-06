@@ -30,7 +30,7 @@ import re
 import sqlite3
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -314,7 +314,7 @@ def report(stats: dict) -> None:
 
     # Region count distribution.
     regions = np.array([e["regions"] for e in eligible], dtype=np.int64)
-    print(f"\ndisjoint regions in final coverage (per session/file):")
+    print("\ndisjoint regions in final coverage (per session/file):")
     print(
         f"  mean={regions.mean():.2f}  median={int(np.median(regions))}  "
         f"p90={int(np.percentile(regions, 90))}  max={int(regions.max())}"
@@ -322,7 +322,7 @@ def report(stats: dict) -> None:
     edges = [1, 2, 3, 4, 6, 11, 10**6]
     labels = ["1 (contig)", "2", "3", "4-5", "6-10", "11+"]
     hist, _ = np.histogram(regions, bins=edges)
-    for label, nb in zip(labels, hist):
+    for label, nb in zip(labels, hist, strict=False):
         print(f"  {label:<10} {nb:>8,}  ({100 * nb / regions.size:>5.1f}%)")
 
     # Extra lines vs initial (only when follow-ups exist).
@@ -338,7 +338,7 @@ def report(stats: dict) -> None:
         edges = [0, 1, 51, 201, 501, 2001, 10**9]
         labels = ["0 (no new)", "1-50", "51-200", "201-500", "501-2000", "2000+"]
         hist, _ = np.histogram(extra, bins=edges)
-        for label, nb in zip(labels, hist):
+        for label, nb in zip(labels, hist, strict=False):
             print(f"  {label:<12} {nb:>8,}  ({100 * nb / extra.size:>5.1f}%)")
 
     # Coverage ratio.
@@ -348,7 +348,7 @@ def report(stats: dict) -> None:
         with np.errstate(divide="ignore", invalid="ignore"):
             ratio = np.where(init_sizes > 0, covered / init_sizes, np.nan)
         ratio = ratio[np.isfinite(ratio)]
-        print(f"\ntotal covered / initial size:")
+        print("\ntotal covered / initial size:")
         print(
             f"  mean={ratio.mean():.2f}x  median={np.median(ratio):.2f}x  "
             f"p90={np.percentile(ratio, 90):.2f}x"
@@ -378,7 +378,7 @@ def plot(stats: dict, since: str) -> Path | None:
         vals = [100 * pos[k] / total for k in keys]
         colors = [POS_COLORS[k] for k in keys]
         bars = ax.bar(keys, vals, color=colors, edgecolor="#111", linewidth=0.5)
-        for bar, v, k in zip(bars, vals, keys):
+        for bar, v, k in zip(bars, vals, keys, strict=False):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 v + 1.0,
@@ -402,7 +402,7 @@ def plot(stats: dict, since: str) -> Path | None:
     pct = 100 * hist / regions.size
     colors = ["#16a34a"] + ["#2563eb"] * 5
     bars = ax.bar(labels, pct, color=colors, edgecolor="#111", linewidth=0.5)
-    for bar, p, h in zip(bars, pct, hist):
+    for bar, p, h in zip(bars, pct, hist, strict=False):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             p + 1.5,
@@ -427,7 +427,7 @@ def plot(stats: dict, since: str) -> Path | None:
         hist, _ = np.histogram(extra, bins=edges)
         pct = 100 * hist / extra.size
         bars = ax.bar(labels, pct, color="#d97706", edgecolor="#7c2d12", linewidth=0.5)
-        for bar, p, h in zip(bars, pct, hist):
+        for bar, p, h in zip(bars, pct, hist, strict=False):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
                 p + 1.5,
@@ -571,7 +571,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=UTC)
     since_ms = int(since.timestamp() * 1000)
 
     if not DB_PATH.exists():

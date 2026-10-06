@@ -21,9 +21,9 @@ from __future__ import annotations
 import argparse
 import sqlite3
 import sys
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Callable
 
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
@@ -133,7 +133,7 @@ def fetch_daily(conn: sqlite3.Connection, tools: list[str]) -> dict:
         per_tool[tool]["results"][i] = results
 
     dates = np.array(
-        [datetime.fromtimestamp(d / 1000, tz=timezone.utc) for d in day_axis]
+        [datetime.fromtimestamp(d / 1000, tz=UTC) for d in day_axis]
     )
     return {"dates": dates, **per_tool}
 
@@ -224,7 +224,7 @@ def weekly_median(ts_ms: np.ndarray, tok: np.ndarray) -> tuple[np.ndarray, np.nd
             p50[i] = np.percentile(tok[lo:hi], 50)
     week_dates = np.array(
         [
-            datetime.fromtimestamp(int(w) * WEEK_MS / 1000, tz=timezone.utc)
+            datetime.fromtimestamp(int(w) * WEEK_MS / 1000, tz=UTC)
             for w in weeks
         ]
     )
@@ -360,10 +360,7 @@ def main() -> int:
     args = ap.parse_args()
 
     conn = _connect()
-    if args.tools:
-        tools = [t.strip() for t in args.tools.split(",") if t.strip()]
-    else:
-        tools = pick_top_tools(conn, args.top)
+    tools = [t.strip() for t in args.tools.split(",") if t.strip()] if args.tools else pick_top_tools(conn, args.top)
     if not tools:
         sys.exit("no tools selected")
     if len(tools) > len(PALETTE):

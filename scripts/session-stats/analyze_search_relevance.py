@@ -28,7 +28,7 @@ import re
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -326,7 +326,7 @@ def report(records: list[dict]) -> None:
 
     next_page = sum(1 for r in records if r["next_page"])
     refined = sum(1 for r in records if r["refined"])
-    print(f"\nbehaviours (not exclusive):")
+    print("\nbehaviours (not exclusive):")
     print(
         f"  any next-page request   : {next_page:,}  ({100 * next_page / total:.1f}%)"
     )
@@ -360,7 +360,7 @@ def report(records: list[dict]) -> None:
 
     # Engagement vs shape: is the model more likely to read at all when there
     # are more distinct files? When matches are more concentrated per file?
-    print(f"\nengagement vs result shape:")
+    print("\nengagement vs result shape:")
     print(
         f"  {'files-per-result':<22} {'n calls':>9}  {'engaged %':>10}  {'p50 deepest':>12}"
     )
@@ -379,10 +379,7 @@ def report(records: list[dict]) -> None:
             continue
         eng = [r for r in bucket if r["outcome"] == "engaged-read"]
         eng_share = 100 * len(eng) / len(bucket)
-        if eng:
-            p50_deep = int(np.median([r["deepest_index"] + 1 for r in eng]))
-        else:
-            p50_deep = 0
+        p50_deep = int(np.median([r["deepest_index"] + 1 for r in eng])) if eng else 0
         print(f"  {label:<22} {len(bucket):>9,}  {eng_share:>9.1f}%  {p50_deep:>12}")
 
     print(
@@ -405,10 +402,7 @@ def report(records: list[dict]) -> None:
             continue
         eng = [r for r in bucket if r["outcome"] == "engaged-read"]
         eng_share = 100 * len(eng) / len(bucket)
-        if eng:
-            p50_deep = int(np.median([r["deepest_index"] + 1 for r in eng]))
-        else:
-            p50_deep = 0
+        p50_deep = int(np.median([r["deepest_index"] + 1 for r in eng])) if eng else 0
         print(f"  {label:<22} {len(bucket):>9,}  {eng_share:>9.1f}%  {p50_deep:>12}")
 
 
@@ -435,7 +429,7 @@ def plot(records: list[dict], since: str) -> Path | None:
     pct = [100 * n / total for n in nvals]
     colors = [OUTCOME_COLORS[o] for o in ordered]
     bars = ax.bar(ordered, pct, color=colors, edgecolor="#1f2937", linewidth=0.5)
-    for b, p, n in zip(bars, pct, nvals):
+    for b, p, n in zip(bars, pct, nvals, strict=False):
         ax.text(
             b.get_x() + b.get_width() / 2,
             p + 1.5,
@@ -460,7 +454,7 @@ def plot(records: list[dict], since: str) -> Path | None:
         hist, _ = np.histogram(deepest, bins=edges)
         pct = 100 * hist / deepest.size
         bars = ax.bar(labels, pct, color="#0f766e", edgecolor="#134e4a", linewidth=0.5)
-        for b, p, n in zip(bars, pct, hist):
+        for b, p, n in zip(bars, pct, hist, strict=False):
             ax.text(
                 b.get_x() + b.get_width() / 2,
                 p + 1.2,
@@ -557,7 +551,7 @@ def plot(records: list[dict], since: str) -> Path | None:
         linewidth=0.5,
         label="engaged %",
     )
-    for b, p, n in zip(bars, eng_share, n_calls):
+    for b, p, n in zip(bars, eng_share, n_calls, strict=False):
         ax.text(
             b.get_x() + b.get_width() / 2,
             p + 0.8,
@@ -623,7 +617,7 @@ def plot(records: list[dict], since: str) -> Path | None:
         linewidth=0.5,
         label="engaged %",
     )
-    for b, p, n in zip(bars, eng_share, n_calls):
+    for b, p, n in zip(bars, eng_share, n_calls, strict=False):
         ax.text(
             b.get_x() + b.get_width() / 2,
             p + 0.8,
@@ -674,7 +668,7 @@ def main() -> int:
     )
     args = ap.parse_args()
 
-    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=UTC)
     since_ms = int(since.timestamp() * 1000)
 
     if not DB_PATH.exists():

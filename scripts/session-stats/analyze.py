@@ -20,6 +20,7 @@ import sqlite3
 import sys
 import time
 from collections import Counter, defaultdict
+from datetime import UTC
 from pathlib import Path
 
 DB_PATH = Path.home() / ".omp" / "stats.db"
@@ -461,12 +462,12 @@ def _print_buckets(
 
     print(
         f"\n=== per-tool tokens, bucketed by {bucket_secs}s "
-        f"({'all tools' if not tool_filter else tool_filter}) ==="
+        f"({tool_filter if tool_filter else 'all tools'}) ==="
     )
     for bucket in sorted(by_bucket.keys(), reverse=True)[:20]:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        label = datetime.fromtimestamp(bucket, tz=timezone.utc).strftime(
+        label = datetime.fromtimestamp(bucket, tz=UTC).strftime(
             "%Y-%m-%d %H:%MZ"
         )
         print(f"\n[{label}]")
@@ -706,10 +707,7 @@ def _loc_shape(loc: str) -> str:
         return "empty"
     if loc == "$":
         return "$file"
-    if ":" in loc and not loc.startswith("$"):
-        rest = loc.rsplit(":", 1)[1]
-    else:
-        rest = loc
+    rest = loc.rsplit(":", 1)[1] if ":" in loc and not loc.startswith("$") else loc
     if rest.startswith("(") and rest.endswith(")"):
         return "bracket-(body)"
     if rest.startswith("[") and rest.endswith("]"):
@@ -819,9 +817,9 @@ def cmd_edits(args: argparse.Namespace) -> int:
         for v in verbs:
             verb_count[v] += 1
             fails_by_verb[v][status] += 1
-        for l in locs:
-            loc_count[l] += 1
-            fails_by_loc[l][status] += 1
+        for loc in locs:
+            loc_count[loc] += 1
+            fails_by_loc[loc][status] += 1
 
         if status.startswith("fail") and len(failed_samples) < 8:
             text = r["result_text"] or ""
@@ -849,9 +847,9 @@ def cmd_edits(args: argparse.Namespace) -> int:
         print(f"  {v:<20} {failed}/{total} failed ({pct(failed, total):.0f}%)")
 
     print("\n## Failure rate per locator shape")
-    for l, _ in loc_count.most_common():
-        total, failed = _fail_totals(fails_by_loc[l])
-        print(f"  {l:<20} {failed}/{total} failed ({pct(failed, total):.0f}%)")
+    for loc, _ in loc_count.most_common():
+        total, failed = _fail_totals(fails_by_loc[loc])
+        print(f"  {loc:<20} {failed}/{total} failed ({pct(failed, total):.0f}%)")
 
     _print_counter("\n## edit-tool argument-format usage", by_format)
 

@@ -28,17 +28,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import sqlite3
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
-import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
 import numpy as np
 
 DB_PATH = Path.home() / ".omp" / "stats.db"
@@ -169,10 +168,7 @@ def merge(ivs: list[tuple[int, int]]) -> list[tuple[int, int]]:
 
 
 def contained(s: int, e: int, ivs: list[tuple[int, int]]) -> bool:
-    for ls, le in ivs:
-        if ls <= s and le >= e:
-            return True
-    return False
+    return any(ls <= s and le >= e for ls, le in ivs)
 
 
 def subtract(s: int, e: int, ivs: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -672,7 +668,7 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
     ax = axes[1, 0]
     sm_data = result["summary_sweep"]
     xs = [
-        str("off") if sm == -1 else ("always" if sm == 0 else f"≥{sm}")
+        "off" if sm == -1 else ("always" if sm == 0 else f"≥{sm}")
         for sm, _, _ in sm_data
     ]
     ys = [t / baseline_sim for _, t, _ in sm_data]
@@ -683,7 +679,7 @@ def plot(result: dict, baseline_sim: float, observed: int, out_path: Path) -> No
         edgecolor="#111",
         linewidth=0.5,
     )
-    for bar, y in zip(bars, ys):
+    for bar, y in zip(bars, ys, strict=False):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             y + 0.005,
@@ -759,7 +755,7 @@ def report(
     defaults = result["defaults"]
     line_caps = result["line_caps"]
     grid = result["grid_tokens"]
-    calls = result["grid_calls"]
+    result["grid_calls"]
 
     print(f"\nbaseline (current config: D={CURRENT_DEFAULT}, L={CURRENT_LINE_CAP}):")
     print(f"  observed result tokens   = {observed:>13,}  (truth)")
@@ -771,7 +767,7 @@ def report(
     print(f"  simulator calls (baseline) = {baseline_calls:>11,}")
 
     # Sweep table.
-    print(f"\nsimulated read tokens (× of baseline) by (D, L):")
+    print("\nsimulated read tokens (× of baseline) by (D, L):")
     header = "  D \\ L     " + "  ".join(f"{L:>6}" for L in line_caps)
     print(header)
     for i, D in enumerate(defaults):
@@ -788,7 +784,7 @@ def report(
     # Summarizer threshold sweep at best (D, L).
     print(f"\nsummarizer threshold sweep at best (D, L) = {result['best_DL']}:")
     print(f"  {'min_file_lines':<16} {'tokens':>12}  {'vs baseline':>12}")
-    for sm, t, k in result["summary_sweep"]:
+    for sm, t, _k in result["summary_sweep"]:
         label = "off" if sm == -1 else ("always" if sm == 0 else f">={sm}")
         print(f"  {label:<16} {t:>12,.0f}  {fmt_pct(t / baseline_sim - 1):>12}")
     print(
@@ -798,9 +794,9 @@ def report(
     )
 
     # Byte cap sweep at (best D, L, summarize_min).
-    print(f"\nbyte cap sweep at best (D, L, summarize_min):")
+    print("\nbyte cap sweep at best (D, L, summarize_min):")
     print(f"  {'byte_cap':<10} {'tokens':>12}  {'vs baseline':>12}")
-    for bc, t, k in result["byte_cap_sweep"]:
+    for bc, t, _k in result["byte_cap_sweep"]:
         print(
             f"  {bc // 1024:>4} KB    {t:>12,.0f}  {fmt_pct(t / baseline_sim - 1):>12}"
         )
@@ -851,7 +847,7 @@ def main() -> int:
     ap.add_argument("--since", default=DEFAULT_SINCE)
     args = ap.parse_args()
 
-    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    since = datetime.strptime(args.since, "%Y-%m-%d").replace(tzinfo=UTC)
     since_ms = int(since.timestamp() * 1000)
 
     if not DB_PATH.exists():
