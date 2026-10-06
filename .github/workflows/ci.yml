@@ -723,24 +723,17 @@ jobs:
               OMP_INSTALL_TEST_SKIP_NATIVE_BUILD: "1"
            run: bun run ci:test:install-methods
 
-   # Aggregates every validation job so publish-side release jobs gate on one
-   # result. Binary BUILDS deliberately do not wait for this gate — they run
-   # in parallel with the test fan-out and only publishing is held back.
-   release_gate:
-      name: Release validation gate
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.rust_validate.result == 'success' &&
-         needs.native_addons.result == 'success' &&
-         needs.native_addons_cross.result == 'success' &&
-         needs.test_workspace.result == 'success' &&
-         needs.test_coding_agent_singleton.result == 'success' &&
-         needs.test_ts_native.result == 'success' &&
-         needs.test_coding_agent_ui.result == 'success' &&
-         needs.test_coding_agent_runtime.result == 'success' &&
-         needs.test_coding_agent_native.result == 'success' &&
-         needs.test_smoke.result == 'success' && needs.check.result == 'success' &&
-         needs.install_methods.result == 'success' }}
-      needs: [release_metadata, check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
+   # Terminal barrier: when this job succeeds, every validation job it
+   # depends on is guaranteed settled. release_gate gates on this ONE result
+   # so its `if` never races on the long-pole native_addons_cross `.result`
+   # (GitHub can evaluate a job's `if` before a not-yet-settled long-pole
+   # need is reflected, which silently skips the gate and blocks publishing).
+   # Binary BUILDS deliberately do not wait for this gate — they run in
+   # parallel with the test fan-out and only publishing is held back.
+   validation_barrier:
+      name: Validation barrier
+      if: ${{ !cancelled() }}
+      needs: [check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -750,6 +743,15 @@ jobs:
          # publishing, never ordinary CI.
          - name: Check generated clippy config
            run: bun scripts/gen-clippy-bazelrc.ts --check
+         - run: echo "validation barrier green"
+
+   release_gate:
+      name: Release validation gate
+      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
+         needs.validation_barrier.result == 'success' }}
+      needs: [release_metadata, validation_barrier]
+      runs-on: ubuntu-22.04
+      steps:
          - run: echo "release validation green"
 
    # Builds (does not publish) the Linux-hosted release binaries in parallel
