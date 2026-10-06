@@ -201,7 +201,7 @@ export class StructuredSubagentError extends Error {
 	}
 }
 
-const PLAN_MODE_TOOLS = ["read", "grep", "glob", "web_search"] as const;
+const PLAN_MODE_TOOLS = ["read", "grep", "glob", "web_search", "codegraph"] as const;
 
 function renderSubagentPrompt(assignment: string): string {
 	return prompt.render(subagentUserPromptTemplate, { assignment: assignment.trim() });

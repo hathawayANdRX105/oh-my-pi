@@ -1,5 +1,6 @@
 Persistent shell: one fact command/pipeline; dependencies use `&&`.
 {{#if hasEval}}Scripts/heredocs/`$(…)`/complex pipelines → `eval`.{{else}}Scripts/heredocs/`$(…)`/complex flow → dedicated tool or checked-in script.{{/if}}
+{{#if hasCodegraph}}Code-structure questions (callers/impact/affected tests) → `codegraph` tool; only `codegraph init -i` needs bash.{{/if}}
 `cwd`, not `cd`; `pty` only interactive.
 Internal URIs work as paths for builtins/coreutils, redirects, globs.
 {{#if asyncEnabled}}`async` defers finite results; timeout unchanged.{{/if}}

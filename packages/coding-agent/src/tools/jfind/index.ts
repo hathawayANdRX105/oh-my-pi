@@ -9,12 +9,13 @@ import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { FindToolDetails } from "@oh-my-pi/pi-tui/tools/find";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { formatBytes, formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
+import { formatBytes, formatDuration, formatNumber, prompt } from "@oh-my-pi/pi-utils";
 import { sessionResolveContext } from "../../internal-urls/context";
 import { InternalUrlFilesystem } from "../../internal-urls/url-filesystem";
 import { hasNativeJudge, journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../../judgment";
 import findDescription from "../../prompts/tools/find.md" with { type: "text" };
 import type { ToolSession } from "..";
+import { isCodegraphEnabled } from "../codegraph";
 import { formatPathRelativeToCwd, normalizePathLikeInput, resolveSearchResultPath } from "../path-utils";
 import { toolResult } from "../tool-result";
 import { type CascadeResult, runCascade } from "./cascade";
@@ -56,7 +57,11 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 	readonly loadMode = "essential";
 	readonly label = "Find";
 	readonly summary = "Semantic grep: find files and line ranges by describing what they do";
-	readonly description = findDescription;
+	get description(): string {
+		return prompt.render(findDescription, {
+			hasCodegraph: this.session.isToolActive?.("codegraph") ?? isCodegraphEnabled(this.session),
+		});
+	}
 	readonly parameters = findSchema;
 	readonly strict = true;
 

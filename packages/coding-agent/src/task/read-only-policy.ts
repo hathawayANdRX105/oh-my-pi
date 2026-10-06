@@ -10,6 +10,7 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 	"grep",
 	"glob",
 	"find",
+	"codegraph",
 	"web_search",
 	"ast_grep",
 	"yield",

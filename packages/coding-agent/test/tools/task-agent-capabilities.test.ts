@@ -25,4 +25,13 @@ describe("task agent capability descriptions", () => {
 		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "wait", "yield"] })).toBe(true);
 		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "wait", "bash"] })).toBe(false);
 	});
+
+	// Dropping `codegraph` from the read-only set would flip inquiry-only
+	// task agents to read-write (executor's `readOnly` flag) the moment the
+	// model reaches for it.
+	it("classifies an agent restricted to reads and codegraph queries as read-only", () => {
+		const scout = agentByName(loadBundledAgents(), "scout");
+
+		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "codegraph"] })).toBe(true);
+	});
 });

@@ -34,6 +34,7 @@ import { createFileRecorder, formatResultPath, resultSnapshotPath } from "./file
 import { type FileMatchSection, formatFileMatches } from "@oh-my-pi/pi-tui/tools/grouped-file-output";
 import { formatMatchLine } from "@oh-my-pi/pi-tui/tools/match-line-format";
 import { isFindEnabled } from "./jfind";
+import { isCodegraphEnabled } from "./codegraph";
 import {
 	expandDelimitedPathEntries,
 	formatPathRelativeToCwd,
@@ -357,6 +358,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 			IS_HL_MODE: displayMode.hashLines,
 			IS_LINE_NUMBER_MODE: !displayMode.hashLines && displayMode.lineNumbers,
 			hasFind: this.session.isToolActive?.("find") ?? isFindEnabled(this.session),
+			hasCodegraph: this.session.isToolActive?.("codegraph") ?? isCodegraphEnabled(this.session),
 			eagerDelegation: sessionDelegationBias(this.session) === "eager",
 			scoutAvailable: isScoutSpawnable(
 				cfgTaskDisabledAgents.get(this.session.settings),

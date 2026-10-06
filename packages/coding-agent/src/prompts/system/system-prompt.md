@@ -101,6 +101,7 @@ MUST use specialized tool over shell equivalent:
 {{/has}}
 {{#has tools "grep"}}- Regex/{{#has tools "find"}}literal/known-symbol{{else}}target{{/has}} search: `{{toolRefs.grep}}`, NEVER shell `grep`/`rg`/`awk`.{{/has}}
 {{#has tools "glob"}}- File structure/names: `{{toolRefs.glob}}`, NEVER `ls **/*.ext`/`fd`.{{/has}}
+{{#has tools "codegraph"}}- Code structure on indexed repos (callers/callees, change impact, affected tests): `{{toolRefs.codegraph}}`; index-lagging misses → `status`/`sync`.{{/has}}
 {{#has tools "bash"}}- `{{toolRefs.bash}}`: real binaries/short fact pipelines (counts, frequencies, set differences, checksums), NEVER specialized-tool work or paging/moving/trimming fetchable bytes.{{/has}}
 {{#has tools "edit"}}
 <critical>
