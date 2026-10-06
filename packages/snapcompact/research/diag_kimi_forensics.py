@@ -78,7 +78,7 @@ def main() -> None:
     for shape_name in ("8on16-bw", "doc-8on16-sent-dim"):
         pngs, batches = build_messages(shape_name)
         print(f"\n=== {shape_name}: {len(pngs)} frames ===")
-        for bi, (batch, messages) in enumerate(batches):
+        for bi, (_batch, messages) in enumerate(batches):
             key = sha8(
                 MODEL,
                 "qa-mono-prod",

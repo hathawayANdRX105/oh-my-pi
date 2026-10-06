@@ -18,7 +18,6 @@ import matplotlib.colors as mcolors
 import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Wedge
 
 HERE = Path(__file__).resolve().parent
 DATA_DIR = HERE / "results" / "tensor-heatmap-paddleocr-q7"

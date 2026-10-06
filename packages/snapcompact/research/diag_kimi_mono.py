@@ -113,7 +113,7 @@ def main() -> None:
             "f1": squad.f1(a, q["golds"]),
             "abstained": "unreadable" in a.lower(),
         }
-        for q, a in zip(qs_all, answers)
+        for q, a in zip(qs_all, answers, strict=False)
     ]
     u = {
         k: sum(x[k] for x in usages)

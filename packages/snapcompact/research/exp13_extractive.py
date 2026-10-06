@@ -34,9 +34,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import squad  # noqa: E402
-from squad import _normalize  # noqa: E402
 from providers import llm_complete, load_env_key  # noqa: E402
 from run import CACHE, QA_CACHE, RESULTS, TEXT_CHUNK, load_prompt, sha8  # noqa: E402
+from squad import _normalize  # noqa: E402
 
 MODELS = {
     "gpt-5.5": (2.0, 16.0),
@@ -111,7 +111,7 @@ def run_cell_chunk(model: str, start: int, end: int, ctx: dict) -> list[dict]:
                     + [{"role": "user", "content": [{"text": extract_prompt}]}],
                     max_tokens=args.extract_max_tokens,
                     effort=args.extract_effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
@@ -136,7 +136,7 @@ def run_cell_chunk(model: str, start: int, end: int, ctx: dict) -> list[dict]:
         lambda: dict(
             zip(
                 ("text", "usage", "stop"),
-                llm_complete(keys, model, messages, max_tokens=args.max_tokens),
+                llm_complete(keys, model, messages, max_tokens=args.max_tokens), strict=False,
             )
         ),
         args.fresh,
@@ -144,7 +144,7 @@ def run_cell_chunk(model: str, start: int, end: int, ctx: dict) -> list[dict]:
     usage_rows.append(("qa", qa["usage"]))
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,

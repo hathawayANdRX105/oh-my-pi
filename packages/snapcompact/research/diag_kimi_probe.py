@@ -114,7 +114,7 @@ def cmd_tokens(
     pngs = small_frames(px) if px else frames()
     for k in counts:
         content = [
-            {"type": "text", "text": f"This message has some images attached."},
+            {"type": "text", "text": "This message has some images attached."},
             *(img_block(p) for p in pngs[:k]),
             {
                 "type": "text",

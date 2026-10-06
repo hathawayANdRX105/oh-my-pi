@@ -14,8 +14,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -91,7 +91,7 @@ def heat_color(t: float) -> tuple[int, int, int]:
         (0.91, (255, 210, 94)),
         (1.00, (255, 252, 200)),
     ]
-    for (x0, c0), (x1, c1) in zip(stops, stops[1:]):
+    for (x0, c0), (x1, c1) in zip(stops, stops[1:], strict=False):
         if t <= x1:
             return mix(c0, c1, (t - x0) / (x1 - x0))
     return stops[-1][1]
@@ -307,7 +307,7 @@ def draw_token_grid(
                 (xa, ya, xb, yb), radius=3, fill=blue_color(float(norm[r, c]))
             )
     top = np.unravel_index(np.argsort(grid, axis=None)[-6:], grid.shape)
-    for r, c in zip(top[0], top[1]):
+    for r, c in zip(top[0], top[1], strict=False):
         xa = round(ox + c * cell)
         ya = round(oy + r * cell)
         draw.rounded_rectangle(

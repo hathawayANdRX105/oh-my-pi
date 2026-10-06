@@ -10,7 +10,6 @@ import argparse
 import json
 import math
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -57,7 +56,7 @@ def mix(
     a: tuple[int, int, int], b: tuple[int, int, int], t: float
 ) -> tuple[int, int, int]:
     t = clamp01(t)
-    return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+    return tuple(round(x + (y - x) * t) for x, y in zip(a, b, strict=False))
 
 
 def quantile_norm(values: np.ndarray, q: float = 0.97) -> np.ndarray:
@@ -292,7 +291,7 @@ def draw_token_grid(
     centers: list[tuple[int, int]] = []
     scores = np.asarray([g["edge_score"] for g in group_rows], dtype=np.float32)
     score_norm = quantile_norm(scores, 0.92)
-    for g, s in zip(group_rows, score_norm):
+    for g, s in zip(group_rows, score_norm, strict=False):
         cx = gx + round((int(g["x0"]) + int(g["x1"])) * 0.5 * cell)
         cy = gy + round((int(g["y0"]) + int(g["y1"])) * 0.5 * cell)
         centers.append((cx, cy))
@@ -316,7 +315,7 @@ def draw_layer_bands(
     centers: list[tuple[int, int]] = []
     gap = 7
     h = ((y1 - y0) - gap * (len(layer_rows) - 1)) / len(layer_rows)
-    for i, (row, s, rr) in enumerate(zip(layer_rows, score_norm, ratio_norm)):
+    for i, (row, s, rr) in enumerate(zip(layer_rows, score_norm, ratio_norm, strict=False)):
         yy0 = round(y0 + i * (h + gap))
         yy1 = round(yy0 + h)
         inset = round(26 * (1 - float(s)))

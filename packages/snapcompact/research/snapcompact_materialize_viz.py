@@ -239,7 +239,7 @@ def main() -> None:
         (64 + 2 * (card_w + 24), card_y + 10),
     ]
     featured = ["base-8x13", "align-28x28", "repeat2-align-14x28"]
-    for (cx, cy), name in zip(positions, featured):
+    for (cx, cy), name in zip(positions, featured, strict=False):
         cond = conditions.get(name)
         if not cond:
             continue

@@ -17,8 +17,8 @@ Output: results/agent-r2-metro/metro.png (~2200 px wide).
 import json
 import os
 
-import numpy as np
 import matplotlib
+import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402

@@ -14,8 +14,8 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -77,7 +77,7 @@ def heat_color(t: float) -> tuple[int, int, int]:
         (0.82, (255, 152, 67)),
         (1.00, (255, 242, 158)),
     ]
-    for (pa, ca), (pb, cb) in zip(stops, stops[1:]):
+    for (pa, ca), (pb, cb) in zip(stops, stops[1:], strict=False):
         if t <= pb:
             return mix(ca, cb, (t - pa) / (pb - pa))
     return stops[-1][1]

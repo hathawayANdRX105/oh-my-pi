@@ -17,7 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import random
 import sys
 from pathlib import Path
 from typing import Any
@@ -92,7 +91,7 @@ def heat_color(t: float) -> tuple[int, int, int]:
         (0.78, (160, 250, 145)),
         (1.00, (255, 245, 166)),
     ]
-    for (a, ca), (b, cb) in zip(stops, stops[1:]):
+    for (a, ca), (b, cb) in zip(stops, stops[1:], strict=False):
         if t <= b:
             u = (t - a) / (b - a)
             return tuple(round(ca[i] + (cb[i] - ca[i]) * u) for i in range(3))
@@ -473,7 +472,7 @@ def render_visual(
     boxes = [(672, 236, 1088, 626), (1118, 236, 1534, 626), (1564, 236, 1980, 626)]
     names = ["input layer", "middle layer", "peak alignment"]
     colors = [PALETTE["cyan"], PALETTE["purple"], PALETTE["green"]]
-    for layer, box, name, color in zip(layers, boxes, names, colors):
+    for layer, box, name, color in zip(layers, boxes, names, colors, strict=False):
         render_heat_grid(
             draw,
             sim[layer].reshape(grid, grid),
@@ -684,7 +683,7 @@ def main() -> None:
     answer_cos = []
     global_cos = []
     text_answer_to_image = []
-    for text_h, image_h in zip(text_layers, image_layers):
+    for text_h, image_h in zip(text_layers, image_layers, strict=False):
         text_ref = text_h[text_pos["ref_start"] : text_pos["ref_end"]]
         text_ans = text_h[text_pos["answer_start"] : text_pos["answer_end"]]
         image_tokens = image_h[image_positions]

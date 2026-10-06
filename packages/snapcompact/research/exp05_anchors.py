@@ -231,14 +231,14 @@ def run_cell_chunk(
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
     )
     answers, claimed_rows = parse_answers_rows(qa["text"], len(questions))
     records = []
-    for q, a, crow in zip(questions, answers, claimed_rows):
+    for q, a, crow in zip(questions, answers, claimed_rows, strict=False):
         trow = (
             gold_row(chunk_text, q, end - start, cols) if cond == COND_RULER else None
         )

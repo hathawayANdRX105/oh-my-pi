@@ -9,7 +9,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 from pathlib import Path
 
 import matplotlib
@@ -212,7 +211,7 @@ def render_atlas_panel(
         linewidths=1.5,
         alpha=0.95,
     )
-    for rank, idx in enumerate(hot[-5:][::-1], 1):
+    for _rank, idx in enumerate(hot[-5:][::-1], 1):
         ax.text(
             x[idx] + 0.012,
             y[idx] + 0.010,

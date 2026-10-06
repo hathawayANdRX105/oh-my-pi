@@ -120,7 +120,7 @@ def render_funnel(
 
     panel_w = 660
     titles = ["early (layer {})", "middle (layer {})", "peak (layer {})"]
-    for pi, (layer, title) in enumerate(zip(snapshots, titles)):
+    for pi, (layer, title) in enumerate(zip(snapshots, titles, strict=False)):
         x0 = 64 + pi * (panel_w + 44)
         box = (x0, 232, x0 + panel_w, 952)
         draw.rounded_rectangle(

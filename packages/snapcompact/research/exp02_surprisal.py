@@ -65,15 +65,11 @@ DISEMV_NOTE = (
 
 # bdf._STOPWORDS minus "not" (removal flips meaning; dimming it was harmless).
 _STOP = frozenset(
-    "the a an and or of to in on at as is are was were be been by for with that this it its from had has have but "
-    "he she his her they their them which also who whom when where while will would could should there then than "
-    "into over under about after before between during each such these those some most more other only same so".split()
+    ["the", "a", "an", "and", "or", "of", "to", "in", "on", "at", "as", "is", "are", "was", "were", "be", "been", "by", "for", "with", "that", "this", "it", "its", "from", "had", "has", "have", "but", "he", "she", "his", "her", "they", "their", "them", "which", "also", "who", "whom", "when", "where", "while", "will", "would", "could", "should", "there", "then", "than", "into", "over", "under", "about", "after", "before", "between", "during", "each", "such", "these", "those", "some", "most", "more", "other", "only", "same", "so"]
 )
 # Spelled-out numbers/ordinals/units stay verbatim: golds are full of them.
 _NUMWORDS = frozenset(
-    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen "
-    "seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million "
-    "billion trillion first second third fourth fifth sixth seventh eighth ninth tenth half quarter percent".split()
+    ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million", "billion", "trillion", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "half", "quarter", "percent"]
 )
 _VOWELS = frozenset("aeiou")
 _TOKEN_RE = re.compile(r"([^A-Za-z]*)([a-z]+)([^A-Za-z]*)")
@@ -299,14 +295,14 @@ def run_chunk(
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
     )
     answers = squad.parse_numbered(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,

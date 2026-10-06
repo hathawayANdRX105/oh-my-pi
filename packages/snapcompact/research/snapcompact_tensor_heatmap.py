@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import random
 import sys
 from pathlib import Path
@@ -80,7 +79,7 @@ def heat_color(t: float) -> tuple[int, int, int]:
         (0.85, (255, 164, 75)),
         (1.00, (255, 243, 164)),
     ]
-    for (a, ca), (b, cb) in zip(stops, stops[1:]):
+    for (a, ca), (b, cb) in zip(stops, stops[1:], strict=False):
         if t <= b:
             u = (t - a) / (b - a)
             return tuple(round(ca[i] + (cb[i] - ca[i]) * u) for i in range(3))
@@ -454,10 +453,10 @@ def main() -> None:
         raise SystemExit("image token positions changed across variants")
 
     answer_delta = np.stack(
-        [np.linalg.norm(a - b, axis=1) for a, b in zip(original, answer)], axis=0
+        [np.linalg.norm(a - b, axis=1) for a, b in zip(original, answer, strict=False)], axis=0
     )
     random_delta = np.stack(
-        [np.linalg.norm(a - b, axis=1) for a, b in zip(original, random_mask)], axis=0
+        [np.linalg.norm(a - b, axis=1) for a, b in zip(original, random_mask, strict=False)], axis=0
     )
     ratio = answer_delta / np.maximum(random_delta, 1e-6)
 

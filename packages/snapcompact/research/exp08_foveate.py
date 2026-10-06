@@ -215,7 +215,7 @@ def run_cell_chunk(
                     messages,
                     max_tokens=args.max_tokens,
                     effort=args.effort,
-                ),
+                ), strict=False,
             )
         ),
         args.fresh,
@@ -280,7 +280,7 @@ def run_cell_chunk(
                         messages2,
                         max_tokens=args.max_tokens,
                         effort=args.effort,
-                    ),
+                    ), strict=False,
                 )
             ),
             args.fresh,
@@ -291,7 +291,7 @@ def run_cell_chunk(
             final[i] = answers2[i] or "UNREADABLE"
 
     records = []
-    for i, (q, a) in enumerate(zip(questions, final)):
+    for i, (q, a) in enumerate(zip(questions, final, strict=False)):
         records.append(
             {
                 "model": model,

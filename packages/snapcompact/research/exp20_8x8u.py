@@ -23,8 +23,8 @@ Usage:
 """
 
 import argparse
-import os
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -260,14 +260,14 @@ def qa_unit(
         lambda: dict(
             zip(
                 ("text", "usage", "stop"),
-                llm_complete(keys, model, messages, max_tokens=args.max_tokens),
+                llm_complete(keys, model, messages, max_tokens=args.max_tokens), strict=False,
             )
         ),
         args.fresh,
     )
     answers = parse_answers(qa["text"], len(questions))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "model": model,

@@ -15,7 +15,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 
@@ -89,7 +88,7 @@ def main() -> None:
     rel_a = q["answer_start"] - snip_start
     rel_b = q["answer_end"] - snip_start
     for ti, (tok_id, (o0, o1)) in enumerate(
-        zip(enc["input_ids"], enc["offset_mapping"])
+        zip(enc["input_ids"], enc["offset_mapping"], strict=False)
     ):
         is_answer = o0 < rel_b and o1 > rel_a
         if is_answer:

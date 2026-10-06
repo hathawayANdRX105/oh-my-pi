@@ -16,7 +16,6 @@ import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Rectangle
 
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR / "results" / "tensor-heatmap-paddleocr-q7"
 OUT_DIR = SCRIPT_DIR / "results" / "agent-viz-waterfall"

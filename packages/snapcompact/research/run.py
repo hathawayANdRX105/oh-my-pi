@@ -196,7 +196,7 @@ def run_chunk(cond: dict, start: int, end: int, ctx_args: dict) -> list[dict]:
         usage_rows.append(("qa", usage))
         answers.extend(squad.parse_numbered(text, len(batch)))
     records = []
-    for q, a in zip(questions, answers):
+    for q, a in zip(questions, answers, strict=False):
         records.append(
             {
                 "cond": cond["name"],

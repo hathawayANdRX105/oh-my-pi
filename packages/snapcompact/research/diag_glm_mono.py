@@ -24,7 +24,7 @@ sys.path.insert(0, str(HERE))
 
 import squad  # noqa: E402
 from diag_glm_forensics import build_batches  # noqa: E402
-from diag_glm_probe import ZAI_URL, complete, img_block  # noqa: E402
+from diag_glm_probe import complete, img_block  # noqa: E402
 from providers import load_env_key  # noqa: E402
 from run import QA_CACHE, RESULTS, sha8  # noqa: E402
 
@@ -70,7 +70,7 @@ def score(
             "f1": squad.f1(a, q["golds"]),
             "abstained": "unreadable" in a.lower(),
         }
-        for q, a in zip(questions, answers)
+        for q, a in zip(questions, answers, strict=False)
     ]
     n = len(rows)
     summary = {

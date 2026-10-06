@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -59,7 +59,7 @@ def glass_heat(t: float) -> tuple[int, int, int]:
         (0.88, (255, 178, 87)),
         (1.00, (255, 252, 197)),
     ]
-    for (ta, ca), (tb, cb) in zip(stops, stops[1:]):
+    for (ta, ca), (tb, cb) in zip(stops, stops[1:], strict=False):
         if t <= tb:
             return mix(ca, cb, (t - ta) / (tb - ta))
     return stops[-1][1]

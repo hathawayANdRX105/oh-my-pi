@@ -87,12 +87,12 @@ def main() -> None:
             lambda m=messages: dict(
                 zip(
                     ("text", "usage", "stop"),
-                    llm_complete(keys, MODEL, m, max_tokens=32768, effort=None),
+                    llm_complete(keys, MODEL, m, max_tokens=32768, effort=None), strict=False,
                 )
             ),
             False,
         )
-        for q, a in zip(qs, squad.parse_numbered(qa["text"], len(qs))):
+        for q, a in zip(qs, squad.parse_numbered(qa["text"], len(qs)), strict=False):
             answers_by_q[q["q"]] = a
         usages.append(qa["usage"])
         stops.append(qa["stop"])
