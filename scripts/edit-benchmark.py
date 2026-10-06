@@ -16,9 +16,9 @@ import os
 import sys
 
 from edit_benchmark_common import (
-    BenchmarkSpec,
     EDIT_DIFF,
     EXPECTED_CONTENT,
+    BenchmarkSpec,
     run_benchmark_main,
 )
 

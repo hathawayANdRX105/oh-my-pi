@@ -8,9 +8,8 @@ Usage: python proto-extractor.py <bundled-js-file> <output-dir>
 
 import re
 import sys
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
 
 SCALAR_TYPES = {
     1: "double",
@@ -52,8 +51,8 @@ class FieldDef:
     comment: str = ""
     opt: bool = False
     repeated: bool = False
-    oneof: Optional[str] = None
-    map_key: Optional[int] = None
+    oneof: str | None = None
+    map_key: int | None = None
 
 
 @dataclass
@@ -550,7 +549,7 @@ def main():
             filter_pkg = arg.split("=")[1]
 
     print(f"Reading {input_file}...", file=sys.stderr)
-    with open(input_file, "r", encoding="utf-8", errors="replace") as f:
+    with open(input_file, encoding="utf-8", errors="replace") as f:
         content = f.read()
 
     print(f"File size: {len(content) / 1024 / 1024:.2f} MB", file=sys.stderr)

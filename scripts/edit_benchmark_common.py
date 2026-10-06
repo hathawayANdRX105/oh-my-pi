@@ -15,9 +15,10 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "python/omp-rpc/src"))
@@ -876,7 +877,7 @@ async def run_all(
     benchmark_results = await asyncio.gather(*tasks, return_exceptions=True)
 
     results: dict[str, dict[str, Any]] = {}
-    for model, result in zip(selected_models, benchmark_results):
+    for model, result in zip(selected_models, benchmark_results, strict=False):
         if isinstance(result, Exception):
             results[model] = {
                 "tokens_in": 0,

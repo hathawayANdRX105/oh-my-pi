@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import contextlib
 import json
 import sys
 import time
@@ -60,10 +61,7 @@ def is_noise(entry: dict, verbose: bool = False) -> bool:
 
     # Filter streaming deltas that we skip entirely
     delta_type = get_delta_type(entry)
-    if delta_type in SKIP_DELTAS:
-        return True
-
-    return False
+    return delta_type in SKIP_DELTAS
 
 
 def format_data(typ: str, subtype: str, data: dict | None) -> str:
@@ -236,10 +234,8 @@ def process_file(
             while True:
                 line = f.readline()
                 if line and line.strip():
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError):
                         buffer.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
                 # Emit buffered entries every 0.5s or when buffer is large
                 if buffer and (time.time() - last_emit > 0.5 or len(buffer) > 50):
                     for out in coalesce_entries(buffer, verbose):
@@ -265,12 +261,10 @@ def main():
 
     args = parser.parse_args()
 
-    try:
+    with contextlib.suppress(KeyboardInterrupt):
         process_file(
             args.file, verbose=args.verbose, follow=args.follow, last=args.last
         )
-    except KeyboardInterrupt:
-        pass
 
 
 if __name__ == "__main__":

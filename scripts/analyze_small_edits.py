@@ -2,28 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import asdict, dataclass
-from pathlib import Path
 import argparse
 import json
 import re
 import sys
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from tool_io import (
         ReservoirSample,
-        ToolIOConfig,
         ToolInvocation,
+        ToolIOConfig,
         iter_tool_invocations,
         list_recent_session_files,
     )
 else:
     from scripts.tool_io import (
         ReservoirSample,
-        ToolIOConfig,
         ToolInvocation,
+        ToolIOConfig,
         iter_tool_invocations,
         list_recent_session_files,
     )
@@ -133,9 +133,7 @@ def is_tiny_structural_line(line: str) -> bool:
         return True
     if re.match(r"^(return|break|continue);$", line):
         return True
-    if re.match(r"^[A-Za-z0-9_.$]+\([^)]*\);$", line) and len(line) <= 60:
-        return True
-    return False
+    return bool(re.match(r"^[A-Za-z0-9_.$]+\([^)]*\);$", line) and len(line) <= 60)
 
 
 def classify_success_issue(summary: DiffSummary) -> str:
