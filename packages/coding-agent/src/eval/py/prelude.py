@@ -3,14 +3,24 @@ from __future__ import annotations
 # OMP prelude helpers (loaded once into the runner namespace)
 if "__omp_prelude_loaded__" not in globals():
     __omp_prelude_loaded__ = True
+    import asyncio
+    import collections.abc
+    import contextvars
+    import inspect
+    import json
+    import math
+    import os
+    import re
+    import time
+    import types
+    import typing
     from pathlib import Path
-    import asyncio, collections.abc, contextvars, inspect, os, json, math, re, time, types, typing
     from urllib.parse import unquote
 
 
     # __omp_display is injected by runner.py before the prelude executes; it
     # mirrors IPython's display() semantics with the same MIME bundle output.
-    _omp_display = __omp_display  # type: ignore[name-defined]
+    _omp_display = __omp_display  # noqa: F821  # __omp_display injected by runner.py before the prelude executes
 
     _PRESENTABLE_REPRS = (
         "_repr_mimebundle_",
@@ -219,7 +229,7 @@ if "__omp_prelude_loaded__" not in globals():
                     json_value = json.loads(raw_content)
                 except json.JSONDecodeError as e:
                     _emit_status("output", id=output_id, error=f"Not valid JSON: {e}")
-                    raise ValueError(f"Output {output_id} is not valid JSON: {e}")
+                    raise ValueError(f"Output {output_id} is not valid JSON: {e}") from e
 
                 # Apply jq-like query
                 result_value = _apply_query(json_value, query)
@@ -379,7 +389,8 @@ if "__omp_prelude_loaded__" not in globals():
             raise RuntimeError("tool bridge is unavailable in this kernel")
         return (base.rstrip("/"), token, session)
 
-    import urllib.error, urllib.request
+    import urllib.error
+    import urllib.request
 
     # urllib discovers environment and macOS SystemConfiguration proxies. This
     # host-owned loopback endpoint must always connect directly.
@@ -819,7 +830,7 @@ if "__omp_prelude_loaded__" not in globals():
             for index, handle, snapshot in zip(
                 pending_indexes,
                 (items[index] for index in pending_indexes),
-                snapshots,
+                snapshots, strict=False,
             ):
                 try:
                     results[index] = _handle_value(handle, snapshot)
@@ -897,7 +908,8 @@ if "__omp_prelude_loaded__" not in globals():
             return self._call("status")
 
         async def drain(self, timeout=None):
-            """Items settled since the last drain as ``[(key, JudgmentItem)]``; waits up to ``timeout`` seconds for at least one, else ``[]``."""
+            """Items settled since the last drain as ``[(key, JudgmentItem)]``;
+            waits up to ``timeout`` seconds for at least one, else ``[]``."""
             args = {}
             if timeout is not None:
                 args["timeoutMs"] = max(0, float(timeout) * 1000)
