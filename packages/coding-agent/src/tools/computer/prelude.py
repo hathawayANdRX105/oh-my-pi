@@ -30,7 +30,7 @@ def _make_computer():
         return values
 
     async def _invoke(action, options):
-        response = await _omp_prelude(
+        response = await _omp_prelude(  # noqa: F821  # _omp_prelude injected into exec() globals at runtime
             "computer",
             {
                 **{

@@ -20,6 +20,7 @@
 # per-byte progress can be reported; mlx-lm then loads that directory.
 
 import argparse
+import contextlib
 import fcntl
 import json
 import os
@@ -135,7 +136,10 @@ def download_repo(emit, request_id, model_key, repo, model_dir):
             progress(name)
             continue
         part = f"{target}.part"
-        with urllib.request.urlopen(_request(f"{HF_ENDPOINT}/{repo}/resolve/main/{name}")) as res, open(part, "wb") as out:
+        with (
+            urllib.request.urlopen(_request(f"{HF_ENDPOINT}/{repo}/resolve/main/{name}")) as res,
+            open(part, "wb") as out,
+        ):
             while True:
                 chunk = res.read(CHUNK_BYTES)
                 if not chunk:
@@ -232,10 +236,8 @@ class Server:
 
     def _exit(self, reason):
         log(f"{reason}; exiting")
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(self.socket_path)
-        except OSError:
-            pass
         os._exit(0)
 
     def _idle_watchdog(self):

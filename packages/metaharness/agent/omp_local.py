@@ -319,7 +319,8 @@ class OmpLocal(BaseInstalledAgent):
                 command=(
                     "set -e; "
                     "if command -v apt-get >/dev/null 2>&1; then "
-                    "  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl unzip ca-certificates tar; "
+                    "  apt-get update && DEBIAN_FRONTEND=noninteractive "
+                    "apt-get install -y curl unzip ca-certificates tar; "
                     "elif command -v apk >/dev/null 2>&1; then "
                     "  echo 'ERROR: Alpine/musl base image; @oh-my-pi/pi-natives ships no musl prebuilt' >&2; exit 3; "
                     "elif command -v dnf >/dev/null 2>&1; then dnf install -y curl unzip tar; "
@@ -577,10 +578,7 @@ class OmpLocal(BaseInstalledAgent):
             )
         provider, model = self.model_name.split("/", 1)
 
-        if self._binary:
-            parts = [shlex.quote(self._cli)]
-        else:
-            parts = [shlex.quote(self._bun), shlex.quote(self._cli)]
+        parts = [shlex.quote(self._cli)] if self._binary else [shlex.quote(self._bun), shlex.quote(self._cli)]
         parts += [
             "--print",
             "--mode json",
@@ -632,7 +630,7 @@ class OmpLocal(BaseInstalledAgent):
             "cache_write_tokens": main.cache_write,
         }
 
-    def _sum_main(self, path: Path, acc: "_Usage") -> None:
+    def _sum_main(self, path: Path, acc: _Usage) -> None:
         """Sum assistant `message_end` usage from omp's stdout JSONL.
 
         Streams line-by-line: a runaway transcript must not OOM the host-side

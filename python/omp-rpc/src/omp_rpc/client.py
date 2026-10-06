@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import os
 import queue
@@ -9,30 +10,31 @@ import signal
 import subprocess
 import threading
 import time
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Generic, Mapping, Sequence, TypeVar, cast
+from typing import Any, Generic, TypeVar, cast
 
 from .host_tools import HostTool, HostToolContext
 from .host_uris import HostUri, HostUriContext, normalize_read_result
 from .protocol import (
-    AgentStartEvent,
     AgentEndEvent,
     AgentMessage,
+    AgentStartEvent,
     AssistantMessage,
     AutoCompactionEndEvent,
     AutoCompactionStartEvent,
     AutoRetryEndEvent,
     AutoRetryStartEvent,
     BashResult,
-    FastModeResult,
     BranchMessage,
-    CacheWarmingMode,
     BranchResult,
+    CacheWarmingMode,
     CancellationResult,
     CompactionResult,
     ExtensionError,
     ExtensionUiRequest,
+    FastModeResult,
     ImageContent,
     InterruptMode,
     JsonObject,
@@ -60,11 +62,11 @@ from .protocol import (
     StreamingBehavior,
     ThinkingLevel,
     ThinkingLevelCycleResult,
+    TodoAutoClearEvent,
     TodoItem,
     TodoPhase,
-    TodoStatus,
-    TodoAutoClearEvent,
     TodoReminderEvent,
+    TodoStatus,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -75,12 +77,12 @@ from .protocol import (
     assistant_text,
     parse_agent_messages,
     parse_bash_result,
-    parse_cache_warming_mode,
-    parse_fast_mode_result,
     parse_branch_messages,
     parse_branch_result,
+    parse_cache_warming_mode,
     parse_cancellation_result,
     parse_compaction_result,
+    parse_fast_mode_result,
     parse_model_cycle_result,
     parse_model_info,
     parse_notification,
@@ -267,29 +269,21 @@ def _terminate_process_group(process: subprocess.Popen[Any], pgid: int | None) -
                 process.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
                 process.kill()
-                try:
+                with contextlib.suppress(subprocess.TimeoutExpired):
                     process.wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    pass
         return
 
     def _signal_group(sig: int) -> None:
-        try:
+        # ESRCH: the group is already empty. Teardown is best-effort.
+        with contextlib.suppress(OSError):
             killpg(pgid, sig)
-        except OSError:
-            # ESRCH: the group is already empty. Teardown is best-effort.
-            pass
 
     _signal_group(signal.SIGTERM)
-    try:
+    with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        pass
     _signal_group(signal.SIGKILL)
-    try:
+    with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        pass
 
 
 def _clone_json_value(value: object) -> JsonValue:
@@ -444,7 +438,7 @@ class _PromptLifecycleCoordinator:
         with self.lock:
             if self.active_operation is not None:
                 raise RpcConcurrencyError(
-                    f"Cannot start {operation} while {self.active_operation} is already collecting prompt lifecycle events"
+                    f"Cannot start {operation} while {self.active_operation} is collecting prompt lifecycle events"
                 )
             self.active_operation = operation
 
@@ -707,23 +701,17 @@ class RpcClient:
 
         try:
             if process.stdin is not None:
-                try:
+                with contextlib.suppress(OSError):
                     process.stdin.close()
-                except OSError:
-                    pass
 
             _terminate_process_group(process, self._pgid)
         finally:
             if process.stdout is not None:
-                try:
+                with contextlib.suppress(OSError):
                     process.stdout.close()
-                except OSError:
-                    pass
             if process.stderr is not None:
-                try:
+                with contextlib.suppress(OSError):
                     process.stderr.close()
-                except OSError:
-                    pass
             # Mark the client closed so any thread blocked in a lifecycle
             # wait raises `RpcProcessExitError` instead of
             # waiting for its request timeout. The stdout reader loop would
@@ -2394,7 +2382,5 @@ class RpcClient:
 
     @staticmethod
     def _remove_listener(listeners: list[TListener], listener: TListener) -> None:
-        try:
+        with contextlib.suppress(ValueError):
             listeners.remove(listener)
-        except ValueError:
-            pass

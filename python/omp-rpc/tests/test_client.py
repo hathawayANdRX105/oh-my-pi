@@ -26,7 +26,6 @@ from omp_rpc import (
 )
 from omp_rpc.client import _RpcFrameDecoder
 
-
 FAKE_SERVER = textwrap.dedent(
     """
     import builtins
@@ -157,7 +156,9 @@ FAKE_SERVER = textwrap.dedent(
             "queuedMessageCount": sum(len(items) for items in queued_messages.values()),
             "queuedMessages": {"steering": queued_messages["steering"], "followUp": queued_messages["followUp"]},
             "todoPhases": todo_phases,
-            "dumpTools": [{"name": "read", "description": "Read files", "parameters": {"type": "object"}}] + registered_host_tools,
+            "dumpTools": [
+                {"name": "read", "description": "Read files", "parameters": {"type": "object"}}
+            ] + registered_host_tools,
         }
 
     def emit_prompt_turn(
@@ -227,7 +228,12 @@ FAKE_SERVER = textwrap.dedent(
                 ),
                 flush=True,
             )
-            print(json.dumps({"type": "auto_compaction_start", "reason": "threshold", "action": "context-full"}), flush=True)
+            print(
+                json.dumps(
+                    {"type": "auto_compaction_start", "reason": "threshold", "action": "context-full"}
+                ),
+                flush=True,
+            )
             print(
                 json.dumps(
                     {
@@ -357,7 +363,15 @@ FAKE_SERVER = textwrap.dedent(
             respond(request_id, "set_model", model_info(model_id, model_provider))
         elif command_type == "cycle_model":
             model_id = "claude-sonnet-4-6" if model_id == "claude-sonnet-4-5" else "claude-sonnet-4-5"
-            respond(request_id, "cycle_model", {"model": model_info(model_id, model_provider), "thinkingLevel": thinking_level, "isScoped": False})
+            respond(
+                request_id,
+                "cycle_model",
+                {
+                    "model": model_info(model_id, model_provider),
+                    "thinkingLevel": thinking_level,
+                    "isScoped": False,
+                },
+            )
         elif command_type == "get_available_models":
             respond(
                 request_id,
@@ -486,7 +500,16 @@ FAKE_SERVER = textwrap.dedent(
             queue_name = "steering" if command_type == "steer" else "followUp"
             queued_messages[queue_name].append(command["message"])
             respond(request_id, command_type, {})
-            print(json.dumps({"type": "queue_update", "steering": queued_messages["steering"], "followUp": queued_messages["followUp"]}), flush=True)
+            print(
+                json.dumps(
+                    {
+                        "type": "queue_update",
+                        "steering": queued_messages["steering"],
+                        "followUp": queued_messages["followUp"],
+                    }
+                ),
+                flush=True,
+            )
         elif command_type == "remove_queued_message":
             items = queued_messages.get(command.get("queue"))
             if items is None:
@@ -497,7 +520,16 @@ FAKE_SERVER = textwrap.dedent(
                 items.remove(command["message"])
             respond(request_id, command_type, {"removed": removed})
             if removed:
-                print(json.dumps({"type": "queue_update", "steering": queued_messages["steering"], "followUp": queued_messages["followUp"]}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "type": "queue_update",
+                            "steering": queued_messages["steering"],
+                            "followUp": queued_messages["followUp"],
+                        }
+                    ),
+                    flush=True,
+                )
         elif command_type == "abort":
             respond(request_id, command_type, {})
         elif command_type in {"prompt", "abort_and_prompt"}:
@@ -515,13 +547,46 @@ FAKE_SERVER = textwrap.dedent(
                 emit_prompt_result("req_earlier")
                 time.sleep(0.1)
             if message == "needs ui":
-                print(json.dumps({"type": "extension_ui_request", "id": "ui-1", "method": "input", "title": "Need input", "placeholder": "value"}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "type": "extension_ui_request",
+                            "id": "ui-1",
+                            "method": "input",
+                            "title": "Need input",
+                            "placeholder": "value",
+                        }
+                    ),
+                    flush=True,
+                )
                 continue
             if message == "needs confirm":
-                print(json.dumps({"type": "extension_ui_request", "id": "ui-2", "method": "confirm", "title": "Confirm", "message": "Continue?"}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "type": "extension_ui_request",
+                            "id": "ui-2",
+                            "method": "confirm",
+                            "title": "Confirm",
+                            "message": "Continue?",
+                        }
+                    ),
+                    flush=True,
+                )
                 continue
             if message == "needs cancel":
-                print(json.dumps({"type": "extension_ui_request", "id": "ui-3", "method": "editor", "title": "Edit", "placeholder": "value"}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "type": "extension_ui_request",
+                            "id": "ui-3",
+                            "method": "editor",
+                            "title": "Edit",
+                            "placeholder": "value",
+                        }
+                    ),
+                    flush=True,
+                )
                 continue
             if message == "needs host tool":
                 print(json.dumps({"type": "agent_start"}), flush=True)
@@ -569,7 +634,17 @@ FAKE_SERVER = textwrap.dedent(
                 )
                 continue
             if message == "notifications":
-                print(json.dumps({"type": "extension_error", "extensionPath": "/tmp/ext.py", "event": "run", "error": "boom"}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "type": "extension_error",
+                            "extensionPath": "/tmp/ext.py",
+                            "event": "run",
+                            "error": "boom",
+                        }
+                    ),
+                    flush=True,
+                )
                 print(json.dumps({"type": "unknown_future_event", "value": 1}), flush=True)
             emit_prompt_turn(
                 "pong",
@@ -1085,15 +1160,13 @@ class RpcClientTests(unittest.TestCase):
 
     def test_remove_queued_message_rejects_missing_result(self) -> None:
         server = FAKE_SERVER.replace('{"removed": removed}', '{}')
-        with self.make_client(server) as client:
-            with self.assertRaises(ValueError):
-                client.remove_queued_message("missing", "steering")
+        with self.make_client(server) as client, self.assertRaises(ValueError):
+            client.remove_queued_message("missing", "steering")
 
     def test_remove_queued_message_rejects_nonboolean_result(self) -> None:
         server = FAKE_SERVER.replace('{"removed": removed}', '{"removed": "false"}')
-        with self.make_client(server) as client:
-            with self.assertRaises(ValueError):
-                client.remove_queued_message("missing", "steering")
+        with self.make_client(server) as client, self.assertRaises(ValueError):
+            client.remove_queued_message("missing", "steering")
 
     def test_protocol_v2_decoder_accepts_exact_logical_boundary(self) -> None:
         frame = {
@@ -1727,9 +1800,8 @@ class RpcClientTests(unittest.TestCase):
         self.assertEqual(messages[0]["content"][0]["text"], "pong")
 
     def test_id_less_error_responses_are_correlated(self) -> None:
-        with self.make_client(server=IDLESS_ERROR_SERVER) as client:
-            with self.assertRaises(RpcCommandError) as ctx:
-                client.request_raw("unknown")
+        with self.make_client(server=IDLESS_ERROR_SERVER) as client, self.assertRaises(RpcCommandError) as ctx:
+            client.request_raw("unknown")
 
         self.assertEqual(ctx.exception.command, "unknown")
         self.assertEqual(ctx.exception.error, "unsupported: unknown")
@@ -1798,9 +1870,8 @@ class RpcClientTests(unittest.TestCase):
         self.assertIn("Frame: 'not-json'", str(ctx.exception))
 
     def test_event_history_limit_reports_overflow(self) -> None:
-        with self.make_client(max_event_history=2) as client:
-            with self.assertRaises(RpcError) as ctx:
-                client.prompt_and_wait("say hello", timeout=2.0)
+        with self.make_client(max_event_history=2) as client, self.assertRaises(RpcError) as ctx:
+            client.prompt_and_wait("say hello", timeout=2.0)
 
         self.assertIn("max_event_history", str(ctx.exception))
 

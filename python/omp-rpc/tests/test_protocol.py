@@ -76,7 +76,7 @@ class ProtocolParsingTests(unittest.TestCase):
         self.assertIsInstance(events[0], MessageStartEvent)
         self.assertIsInstance(events[2], MessageEndEvent)
         self.assertEqual(
-            [getattr(event, "message_id") for event in events], ["m-7"] * 3
+            [event.message_id for event in events], ["m-7"] * 3
         )
         legacy = parse_notification({"type": "message_end", "message": assistant})
         assert isinstance(legacy, MessageEndEvent)

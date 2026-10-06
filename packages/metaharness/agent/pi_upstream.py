@@ -29,7 +29,6 @@ Selected via `harbor run --agent-import-path pi_upstream:PiUpstream`.
 from __future__ import annotations
 
 import json
-import os
 import shlex
 from pathlib import Path
 from typing import override
@@ -37,8 +36,7 @@ from typing import override
 from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
 from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
-
-from omp_local import _Usage, _env, _loads
+from omp_local import _env, _loads, _Usage
 
 _OUTPUT_FILENAME = "pi.txt"
 _MODELS_DST = "/tmp/pi-models.json"
@@ -109,12 +107,14 @@ class PiUpstream(BaseInstalledAgent):
             command=(
                 "set -e; "
                 "if ! command -v curl >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1; then "
-                "  if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates tar xz-utils; "
+                "  if command -v apt-get >/dev/null 2>&1; then apt-get update && "
+                "DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates tar xz-utils; "
                 "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache curl ca-certificates tar xz; "
                 "  elif command -v dnf >/dev/null 2>&1; then dnf install -y curl tar xz; "
                 "  elif command -v yum >/dev/null 2>&1; then yum install -y curl tar xz; fi; "
                 "fi; "
-                "command -v xz >/dev/null 2>&1 || { if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y xz-utils; fi; }"
+                "command -v xz >/dev/null 2>&1 || { if command -v apt-get >/dev/null 2>&1; then "
+                "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y xz-utils; fi; }"
             ),
         )
         q = shlex.quote
@@ -129,7 +129,8 @@ class PiUpstream(BaseInstalledAgent):
                 f"| tar -xJ -C {q(self._node_dir)} --strip-components=1; "
                 f'export PATH="{self._node_dir}/bin:$PATH"; node --version; '
                 f"cd {q(self._app_dir)}; printf '{{}}' > package.json; "
-                f"npm install --silent --no-audit --no-fund {q('@earendil-works/pi-coding-agent@' + self._pkg_version)}; "
+                f"npm install --silent --no-audit --no-fund "
+                f"{q('@earendil-works/pi-coding-agent@' + self._pkg_version)}; "
                 f"{self._pi()} --version"
             ),
             timeout_sec=900,
