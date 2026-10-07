@@ -1,4 +1,4 @@
-<!-- managed by canon agents.yaml @ 2026-10-02 -->
+<!-- managed by canon agents.yaml @ 2026-10-08 -->
 ## oh-my-pi 开发约定
 
 ### Default Context
@@ -349,7 +349,7 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 
 ## 发现处置纪律
 
-自动检查（canon 的 `FAIL`/`WARN`、`jev` L3 语义发现、CRG / `ocr review` 审查意见）
+自动检查（canon 的 `FAIL`/`WARN`、`jev` L3 语义发现、CRG 审查意见）
 产出的是**发现**，不是判决。每条发现都必须被显式处置，不存在"绕过"这个选项。
 
 ### 先读规范，再改代码
@@ -378,8 +378,8 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 
 | 禁止 | 为什么 | 正确做法 |
 |---|---|---|
-| 改 `.githooks/spec/` 规则、降低 `fail_severity`、删 spec 文件 | 把约束改没，不是修问题 | 开 issue 说明规则缺陷，交维护者决定 |
-| `--no-verify`、跳过钩子、直接推 | 绕过的是整个门禁体系 | 修到清零；规则有误走 issue |
+| 改 `.githooks/spec/` 规则、降低 `fail_severity`、删 spec 文件 | 把约束改没，不是修问题 | 在对话里说明规则缺陷，交用户决定 |
+| `--no-verify`、跳过钩子、直接推 | 绕过的是整个门禁体系 | 修到清零；规则有误上报用户 |
 | `head` / `tail` / `grep -v` 截断输出后当没看见 | 后面的 finding 被吞 | 完整读输出 |
 | 加 `#[allow(dead_code)]` / `# noqa` 消告警 | 压制信号而非解决 | 删无用代码，或写清保留理由 |
 | 建空文件 / 空目录 / 占位文件骗过目录类规则 | 结构噪音 | 真按规则合并或删除 |
@@ -391,13 +391,13 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 - **每条 finding 一个处置**：修复（默认）或**书面驳回**。
 - 修复 → 在交付记录里写：`规则 ID → 根因 → 改法（file:line）`。
 - 驳回 → 必须写 `规则 ID + 不修理由 + 依据`，由维护者裁决。沉默即违规。
-- 交付记录落点：PR 正文 `## Delivery record` 段，或 issue 的交付评论。
+- 交付记录落点：PR 正文 `## Delivery record` 段。
 - WARN 与 FAIL 同等对待。WARN 只是不拦，不是可忽略。
 
 ### 规范层级
 
 - `.githooks/` 是 canon 领地：agent 不改规则。
-- `.agent/rules/`、`specs/rules/` 是规范正本：发现规则与现实冲突 → 提 issue，不自行改写。
+- `.agent/rules/`、`specs/rules/` 是规范正本：发现规则与现实冲突 → 上报用户，不自行改写。
 - 本纪律与各仓既有条款冲突时，以本纪律为准（它更严格）。
 
 ## 代码风格
@@ -417,9 +417,10 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 
 ### 占位符与未完成
 
-- 未实现的函数或 trait 用语言原生宏，并带 issue 号：
-  - Rust：`todo!("TODO(#123): 说明这里要做什么")` / `unimplemented!("…")`
-- TODO / FIXME 注释必须带 issue 号：`// TODO(#123): …`。
+- 未实现的函数或 trait 用语言原生宏，并带可追溯标识（PR 号 / 分支名 / 模块名皆可）：
+  - Rust：`todo!("TODO(PR-12): 说明这里要做什么")` / `unimplemented!("…")`
+- TODO / FIXME 注释必须带可追溯标识：`// TODO(PR-12): …`。
+- 标识是信息位，不要求对应任何外部系统。
 - 不留空的 `todo!()` / `pass` / `NotImplemented` 桩而无说明。
 
 ### 复用与删除
@@ -448,7 +449,7 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 - 不要在会话里自行 `export RUSTC_WRAPPER` 或改 jobs——统一走仓配置；
   重命令照旧套 cgroup CPU 配额（`systemd-run --user --scope -p CPUQuota=70% --`）。
 - 增量编译已关（缓存优先）：同树连续小改动按 crate 级重编是预期行为，不是
-  回归；若本仓热重载明显变慢，提 issue 议局部放开。
+  回归；若本仓热重载明显变慢，跟用户确认后局部放开。
 - 新建 `.wt` worktree 直接用；旧布局 worktree 若报 workspace 收编错误，
   根因与修法见 canon 仓 `Cargo.toml` 的 `exclude` 注释。
 - 配置细节、坑清单与实测基线：skill `rust-dev-perf`。
@@ -480,7 +481,7 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
   任何编译/测试、只准 CI 跑，比套配额更严），此时本条自动让位，不构成豁免。
 - 装依赖、打包等命令同样受限。
 
-### 收尾
+### 验证收尾
 
 - 一次跑完该跑的检查（测试 + lint + 类型），不在半成品状态下宣称通过。
 - 验证不了的部分（缺运行环境、缺凭据、缺硬件）明确说"未验证 + 为什么"，
@@ -498,7 +499,7 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 
 ### 敏感与不可逆
 
-- 凭据、token、密钥、私钥：不打印到输出、不写进提交、不粘到 issue/PR 正文。
+- 凭据、token、密钥、私钥：不打印到输出、不写进提交、不粘到 PR 正文。
 - 不擅自 dump 整个配置文件或环境变量（可能含密钥）。要看就只看需要的字段。
 - 系统级配置、字体、全局环境、dotfiles 里的全局项：默认别动，改动前先问。
 - 数据库迁移、配置格式变更、依赖大版本升级：先确认可回滚。
@@ -525,25 +526,62 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 - 一个 commit 一件事。不把无关改动、格式化噪声、生成物混进逻辑改动。
 - 提交前跑对应检查（`canon pre-commit` / `canon pre-push`），不靠推送失败才发现。
 
-### Issue
+### 提交身份
 
-- 标题中文；正文 heading 英文、内容中文。
-- sub-issue 必须自包含：正文不写 `Parent:` / `Related:` / PR 占位符，直接写清它要什么。
-- 关闭前 `Done when` 的 checkbox 全勾。
+- commit 作者固定是维护者本人账号 `hathawayANdRX105`（大小写逐字一致）。
+- **不得**用 `git -c user.name=... -c user.email=...` 覆盖身份提交。历史上
+  `agent@local` / `ci@local` 这类签名就是这么来的：GitHub 账号对不上，
+  贡献归属、追责、审计全丢。
+- 提交前若 `git config user.name` / `user.email` 不是上面这个账号，先改成本仓配置
+  （`git config user.name hathawayANdRX105`），别带着错的身份往下走。
+- 邮箱两套都算合法：`2635254302@qq.com`（本地提交）与 GitHub 的
+  `61958173+hathawayANdRX105@users.noreply.github.com`（服务端 squash 落库时写的）。
+- 禁止 `Co-authored-by:`  trailer 署其他人或机器人账号。
 
 ### PR
 
 - 标题纯英文（conventional commit 风格）；正文小节标题英文、内容中文。
 - 正文按仓库模板（`.github/PULL_REQUEST_TEMPLATE.md`）写：背景 / 改了什么 / 为什么 /
   实现步骤 / 交付记录 / 怎么验证 / 检查清单。
-- 关联 issue 用 `Fixes #<n>` 收尾行；draft 阶段用 `Related #<n>`，合并授权前改 `Fixes`。
+- 验收标准写在 PR 的 `Construction plan` 里。审查发现的问题在同一 PR 上继续提交修复，不另开 PR。
 - 开启或更新 PR 后看 CI 结果到底（`gh pr checks`），红了就修，不等用户来问。
-- 被 canon 拦下就修代码，**不改规则**。规则确有缺陷 → 开 issue 交维护者裁决。
+- 被 canon 拦下就修代码，**不改规则**。规则确有缺陷 → 上报用户裁决。
+
+### 合并
+
+- **只走 squash merge**：
+  `gh pr merge <N> --squash --delete-branch --body "Agent 🤖 - Merge: <原因>"`。
+- 禁用 `--merge` / `--rebase`（含 `-m` / `-r` 短形式）。merge commit 会让 PR
+  记录的分支历史消失，同一分支再合要重新三方合并、当初的冲突裁决全部丢失；
+  rebase-merge 还会逐个改写 commit 作者。两者都让 `main` 失去审计价值。
+- 不带任何合并方式的 `gh pr merge` 会弹交互菜单 —— agent 不该触发交互，一律显式
+  写 `--squash`。
+- 禁止本地 `git merge <分支>` 直接合进 `main` 再推 remote。要合就走 PR。
+- 各仓 GitHub 设置已关闭 merge commit 与 rebase merge，squash 是唯一可选项。
 
 ### 收尾
 
-- 收尾时清掉：已合并分支、临时 worktree、临时进程、跑完的 dev server。
-- 资源及时释放；只保留维护者需要的进程（如用户要看的 web 前端）。
+清的是**本会话自己造出来的东西**。别的会话正在用的 worktree、分支、进程一律不碰。
+
+#### 工作树与分支
+
+- `.wt/` 下的临时 worktree 目录与对应分支，合并完成后逐个清掉，不留 stale。
+- 动手前 `git worktree list` + `git branch` 对照，确认目标确实是本会话建的；
+  会话开始时就存在的不动。
+- 清之前确认三件事：PR 已合并、工作区无未提交改动、目录对应当前分支。任一不满足
+  就不清，先说清卡在哪。
+- 顺序：`git worktree remove <目录>` → `git branch -d <分支>` → 删远端分支。
+  worktree 还挂着时 `-d` 删不掉，先 remove。
+- **严禁** `rm -rf .wt/`、`rm -rf .wt/*`、`git clean` 这类批量删——会连别的会话的
+  工作树一起擦掉。删单个目录也走 `git worktree remove`。
+
+#### 进程与资源
+
+- 长驻进程（dev server、watcher、调试器、后台任务）用完停掉，确认端口已释放，
+  不留孤儿进程。
+- 后台 job 要等到结果再收尾，别挂着不管。
+- 只保留维护者明确要留的（如用户正在看的 web 前端）。资源及时释放，不抢占用户
+  正在用的 CPU 与内存。
 
 ## 工具与命令
 
