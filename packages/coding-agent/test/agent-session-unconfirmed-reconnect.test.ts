@@ -201,6 +201,9 @@ describe("AgentSession unconfirmed-completion reconnect", () => {
 				// Keep unexpected-stop classification off the critical path: a
 				// thinking-only stop is not what these tests defend.
 				"features.unexpectedStopDetection": "mechanical",
+				// Deliver the reminder inline so the assertion sees it right after
+				// waitForIdle; the parked-interval test overrides this upward.
+				"taskComplete.reconnectDelayMs": 0,
 			}),
 			modelRegistry: sharedModelRegistry,
 		});
@@ -326,7 +329,7 @@ describe("AgentSession unconfirmed-completion reconnect", () => {
 		// settles immediately even though the reconnect is 2 minutes out.
 		await session.waitForIdle();
 
-		expect(reconnectReminders()).toHaveLength(1);
+		expect(reconnectReminders()).toHaveLength(0);
 		expect(terminalEnds).toEqual([false]);
 	});
 });

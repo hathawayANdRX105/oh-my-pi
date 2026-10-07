@@ -4236,6 +4236,11 @@ export class AgentSession implements SettingsScope {
 			}
 			// A capped empty stop still has stopReason "stop"; built-in reminders
 			// must not restart it after recovery has declared the turn terminal.
+			// The marker is the model's own "I confirmed completion" signal. Capture it
+			// before the branch below discharges it: the reconnect gate at the bottom
+			// must still be able to tell a confirmed stop from an unconfirmed one, or
+			// a marker stop with stale todos would reconnect.
+			const markerConfirmed = this.#taskCompleteTerminated || this.#taskCompleteMarked;
 			if (msg.stopReason !== "error" && emptyOutputRecovery !== "terminal") {
 				if (this.#enforceRewindBeforeYield()) {
 					await emitAgentEndNotification({ willContinue: true });
@@ -4264,7 +4269,7 @@ export class AgentSession implements SettingsScope {
 			}
 			// Last-resort persistence: every recovery above declined. The gate must
 			// see the marker before it is discharged — a confirmed stop settles.
-			if (await this.#maybeScheduleUnconfirmedReconnect(msg)) {
+			if (await this.#maybeScheduleUnconfirmedReconnect(msg, markerConfirmed)) {
 				await emitAgentEndNotification({ willContinue: true });
 				return;
 			}
@@ -4444,10 +4449,13 @@ export class AgentSession implements SettingsScope {
 	 * @returns true when the reconnect owns the next turn (the caller reports
 	 *   `willContinue`).
 	 */
-	async #maybeScheduleUnconfirmedReconnect(msg: AssistantMessage): Promise<boolean> {
+	async #maybeScheduleUnconfirmedReconnect(
+		msg: AssistantMessage,
+		markerConfirmed = this.#taskCompleteTerminated || this.#taskCompleteMarked,
+	): Promise<boolean> {
 		if (this.#agentKind !== "main") return false;
 		if (cfgTaskCompleteReconnect.get(this.settings) !== true) return false;
-		if (this.#taskCompleteTerminated || this.#taskCompleteMarked) return false;
+		if (markerConfirmed) return false;
 		if (this.#isDisposed || this.#abortInProgress) return false;
 		// A reconnect is already parked or in flight: a second settle inside the
 		// same interval must not spend another budget slot or stack a timer.
@@ -4471,6 +4479,10 @@ export class AgentSession implements SettingsScope {
 			!AIError.isContextOverflow(msg, this.model?.contextWindow ?? 0) &&
 			!AIError.isPayloadRejection(msg) &&
 			!this.#recovery.isClassifierRefusal(msg);
+		// Terminal-by-design errors (context overflow, 413 payload rejection, classifier
+		// refusals, auth failures) never resubmit — the request itself is the problem,
+		// so open todos must not override #checkCompaction's ownership of them.
+		if (msg.stopReason === "error" && !transportDrop) return false;
 		const providerFault =
 			transportDrop ||
 			(msg.stopReason === "aborted" &&
@@ -4508,8 +4520,12 @@ export class AgentSession implements SettingsScope {
 			attribution: "agent" as const,
 			timestamp: Date.now(),
 		};
-		this.agent.appendMessage(reconnectMessage);
-		this.sessionManager.appendMessage(reconnectMessage);
+		// Delivered at fire time, not at settle: the failed turn's assistant message
+		// must stay the trailing transcript entry while the interval is parked.
+		const deliverReminder = (): void => {
+			this.agent.appendMessage(reconnectMessage);
+			this.sessionManager.appendMessage(reconnectMessage);
+		};
 		const delayMs = cfgTaskCompleteReconnectDelay.get(this.settings);
 		logger.info("Unconfirmed completion; reconnecting at interval", {
 			attempt: this.#unconfirmedReconnectCount,
@@ -4527,6 +4543,7 @@ export class AgentSession implements SettingsScope {
 		// continuation to the normal scheduler once it fires.
 		const generation = this.#promptGeneration;
 		if (delayMs <= 0) {
+			deliverReminder();
 			this.#scheduleAgentContinue({ source: "task-unconfirmed-reconnect", generation });
 			return true;
 		}
@@ -4534,6 +4551,11 @@ export class AgentSession implements SettingsScope {
 			this.#unconfirmedReconnectTimer = undefined;
 			if (this.#isDisposed || this.#abortInProgress) return;
 			if (this.#promptGeneration !== generation) return;
+			// Another driver (goal continuation, queued message drain) already
+			// resumed the run: its own settle re-evaluates this gate, so firing
+			// here would only insert a stale reminder into a live transcript.
+			if (this.#promptInFlightCount > 0) return;
+			deliverReminder();
 			this.#scheduleAgentContinue({ source: "task-unconfirmed-reconnect", generation });
 		}, delayMs);
 		this.#unconfirmedReconnectTimer.unref?.();
