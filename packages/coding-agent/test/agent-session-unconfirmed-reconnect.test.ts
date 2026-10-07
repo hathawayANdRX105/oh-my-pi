@@ -7,7 +7,11 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { cfgTaskCompleteReconnect, cfgTaskCompleteReconnectMax } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import {
+	cfgTaskCompleteReconnect,
+	cfgTaskCompleteReconnectDelay,
+	cfgTaskCompleteReconnectMax,
+} from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -197,9 +201,6 @@ describe("AgentSession unconfirmed-completion reconnect", () => {
 				// Keep unexpected-stop classification off the critical path: a
 				// thinking-only stop is not what these tests defend.
 				"features.unexpectedStopDetection": "mechanical",
-				// Collapse the reconnect interval so the continuation lands inside
-				// waitForIdle's post-prompt drain instead of a 30s wall-clock wait.
-				"taskComplete.reconnectDelayMs": 0,
 			}),
 			modelRegistry: sharedModelRegistry,
 		});
@@ -299,5 +300,33 @@ describe("AgentSession unconfirmed-completion reconnect", () => {
 
 		expect(reconnectReminders()).toHaveLength(0);
 		expect(terminalEnds).toEqual([true]);
+	});
+
+	it("keeps a compaction-owned 413 rejection terminal even with open todos", async () => {
+		setIncompleteTodos();
+		// 413 payload rejection is owned by #checkCompaction; resubmitting the same
+		// oversized request can never succeed, so it must not be retried by resubmission.
+		emitStop(
+			assistantMessage([{ type: "text", text: "context window exceeded" }], "error", {
+				errorMessage: "413 Request Entity Too Large: input exceeds the limit of 262144 tokens",
+				errorStatus: 413,
+			}),
+		);
+		await session.waitForIdle();
+
+		expect(reconnectReminders()).toHaveLength(0);
+		expect(terminalEnds).toEqual([true]);
+	});
+
+	it("does not hold waitForIdle for the reconnect interval", async () => {
+		cfgTaskCompleteReconnectDelay.override(session.settings, 120_000);
+		setIncompleteTodos();
+		emitErrorStop("502 upstream status 405: Blocked clients", 135168);
+		// The parked interval must not be tracked post-prompt work: the session
+		// settles immediately even though the reconnect is 2 minutes out.
+		await session.waitForIdle();
+
+		expect(reconnectReminders()).toHaveLength(1);
+		expect(terminalEnds).toEqual([false]);
 	});
 });

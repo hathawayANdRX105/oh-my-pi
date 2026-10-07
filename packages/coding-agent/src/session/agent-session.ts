@@ -432,11 +432,6 @@ const SESSION_STOP_CONTINUATION_CAP = 8;
  * 上限只兜住"连续只打标记、不写正文"的退化模型,避免无限续跑烧 token。
  */
 const TASK_COMPLETE_MAX_SILENT_CONTINUATIONS = 2;
-/**
- * task_complete 未确认时(断联/空停/带未完成 todo 的停止)的间隔重连延迟。
- * 模型未确认完成 → 间隔后重连,而不是静默终止;用户中断/已确认标记保持终止。
- */
-const TASK_UNCONFIRMED_RECONNECT_DELAY_MS = 30_000;
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { TodoTracker, isAssistantAwaitingUserAnswer, type TodoTrackerHost } from "./todo-tracker";
@@ -1055,6 +1050,13 @@ export class AgentSession implements SettingsScope {
 	 * every new prompt. The gate refuses to reconnect past `taskComplete.reconnectMax`.
 	 */
 	#unconfirmedReconnectCount = 0;
+	/**
+	 * Pending interval wait for the next unconfirmed-completion reconnect. Held
+	 * outside the post-prompt queue on purpose: a tracked sleep would hold
+	 * `waitForIdle()` (and every headless drain) for the whole interval after the
+	 * run already settled. Cleared on abort, on a new prompt, and on dispose.
+	 */
+	#unconfirmedReconnectTimer: NodeJS.Timeout | undefined = undefined;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	readonly #cacheWarmer: CacheWarmer | undefined;
 	#hindsightSessionState: HindsightSessionState | undefined = undefined;
@@ -1068,6 +1070,15 @@ export class AgentSession implements SettingsScope {
 		this.#taskCompleteTerminated = false;
 		this.#taskCompleteSilentContinuations = 0;
 		this.#unconfirmedReconnectCount = 0;
+		// A fresh prompt supersedes any parked reconnect: the user already spoke.
+		this.#clearUnconfirmedReconnectTimer();
+	}
+
+	/** Cancels a parked unconfirmed-reconnect wait (new prompt, abort, dispose). */
+	#clearUnconfirmedReconnectTimer(): void {
+		if (this.#unconfirmedReconnectTimer === undefined) return;
+		clearTimeout(this.#unconfirmedReconnectTimer);
+		this.#unconfirmedReconnectTimer = undefined;
 	}
 
 	#acquirePowerAssertion(): void {
@@ -4438,14 +4449,30 @@ export class AgentSession implements SettingsScope {
 		if (cfgTaskCompleteReconnect.get(this.settings) !== true) return false;
 		if (this.#taskCompleteTerminated || this.#taskCompleteMarked) return false;
 		if (this.#isDisposed || this.#abortInProgress) return false;
+		// A reconnect is already parked or in flight: a second settle inside the
+		// same interval must not spend another budget slot or stack a timer.
+		if (this.#unconfirmedReconnectTimer !== undefined) return false;
 		if (AIError.is(msg.errorId, AIError.Flag.UserInterrupt)) return false;
 		// A streaming-edit guard abort is a deliberate local stop (failed-patch
 		// preview): the user is mid-review, so settling the turn is the contract.
 		if (this.#streamingEditGuard.abortTriggered) return false;
 		const activeGoal = this.#goalModeState?.enabled === true && this.#goalModeState.goal.status === "active";
 		const incompleteTodos = this.#incompleteTodoCount();
+		// Transport-level classification, NOT `isRetryableError`: that one is the
+		// replay-safety gate (it vetoes committed text and executed tools), and this
+		// gate never replays the failed turn — it appends a fresh reminder and starts
+		// a new turn, so a drop after real output must still count. Compact stops are
+		// excluded because `checkCompaction` owns them: context overflow, 413 payload
+		// rejection, and classifier refusals settle by design even with work pending.
+		const classified = AIError.classifyMessage(msg);
+		const transportDrop =
+			msg.stopReason === "error" &&
+			AIError.is(classified, AIError.Flag.Transient) &&
+			!AIError.isContextOverflow(msg, this.model?.contextWindow ?? 0) &&
+			!AIError.isPayloadRejection(msg) &&
+			!this.#recovery.isClassifierRefusal(msg);
 		const providerFault =
-			msg.stopReason === "error" ||
+			transportDrop ||
 			(msg.stopReason === "aborted" &&
 				// Internal lifecycle aborts (compact, model switch, /new) carry their
 				// own reason; user interrupts are stamped above. Only the reasonless
@@ -4483,6 +4510,7 @@ export class AgentSession implements SettingsScope {
 		};
 		this.agent.appendMessage(reconnectMessage);
 		this.sessionManager.appendMessage(reconnectMessage);
+		const delayMs = cfgTaskCompleteReconnectDelay.get(this.settings);
 		logger.info("Unconfirmed completion; reconnecting at interval", {
 			attempt: this.#unconfirmedReconnectCount,
 			stopReason: msg.stopReason,
@@ -4490,13 +4518,25 @@ export class AgentSession implements SettingsScope {
 			model: msg.model,
 			activeGoal,
 			incompleteTodos,
-			delayMs: TASK_UNCONFIRMED_RECONNECT_DELAY_MS,
+			delayMs,
 		});
-		this.#scheduleAgentContinue({
-			source: "task-unconfirmed-reconnect",
-			delayMs: cfgTaskCompleteReconnectDelay.get(this.settings),
-			generation: this.#promptGeneration,
-		});
+		// The interval wait must NOT be tracked post-prompt work: `waitForIdle()`
+		// and every headless driver drain that promise, so a tracked 30s sleep
+		// would make the whole session look busy long after the run settled. Park
+		// the timer on a session-owned, dispose-cleared handle and hand the
+		// continuation to the normal scheduler once it fires.
+		const generation = this.#promptGeneration;
+		if (delayMs <= 0) {
+			this.#scheduleAgentContinue({ source: "task-unconfirmed-reconnect", generation });
+			return true;
+		}
+		this.#unconfirmedReconnectTimer = setTimeout(() => {
+			this.#unconfirmedReconnectTimer = undefined;
+			if (this.#isDisposed || this.#abortInProgress) return;
+			if (this.#promptGeneration !== generation) return;
+			this.#scheduleAgentContinue({ source: "task-unconfirmed-reconnect", generation });
+		}, delayMs);
+		this.#unconfirmedReconnectTimer.unref?.();
 		return true;
 	}
 
@@ -5435,6 +5475,7 @@ export class AgentSession implements SettingsScope {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#clearUnconfirmedReconnectTimer();
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -9282,6 +9323,7 @@ export class AgentSession implements SettingsScope {
 		// auto-starting a fresh turn during cleanup.
 		this.#abortInProgress = true;
 		try {
+			this.#clearUnconfirmedReconnectTimer();
 			this.#titleGenerationAbortController.abort();
 			if (!this.#isDisposed) this.#titleGenerationAbortController = new AbortController();
 			this.#abortAutolearnCapture();
