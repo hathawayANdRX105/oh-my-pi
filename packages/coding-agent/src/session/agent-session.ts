@@ -197,6 +197,7 @@ import rewindReportTemplate from "../prompts/system/rewind-report.md" with { typ
 import sessionStopBlockedPrompt from "../prompts/system/session-stop-blocked.md" with { type: "text" };
 import sideChannelNoToolsReminder from "../prompts/system/side-channel-no-tools.md" with { type: "text" };
 import skillfulNoticePrompt from "../prompts/system/skillful-notice.md" with { type: "text" };
+import unconfirmedReconnectTemplate from "../prompts/system/unconfirmed-reconnect.md" with { type: "text" };
 import vibeModeActivePrompt from "../prompts/system/vibe-mode-active.md" with { type: "text" };
 import {
 	deobfuscateAssistantContent,
@@ -243,7 +244,7 @@ import {
 } from "../tools/resolve";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { AgentDefinition } from "../task/types";
@@ -431,9 +432,14 @@ const SESSION_STOP_CONTINUATION_CAP = 8;
  * 上限只兜住"连续只打标记、不写正文"的退化模型,避免无限续跑烧 token。
  */
 const TASK_COMPLETE_MAX_SILENT_CONTINUATIONS = 2;
+/**
+ * task_complete 未确认时(断联/空停/带未完成 todo 的停止)的间隔重连延迟。
+ * 模型未确认完成 → 间隔后重连,而不是静默终止;用户中断/已确认标记保持终止。
+ */
+const TASK_UNCONFIRMED_RECONNECT_DELAY_MS = 30_000;
 
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
-import { TodoTracker, type TodoTrackerHost } from "./todo-tracker";
+import { TodoTracker, isAssistantAwaitingUserAnswer, type TodoTrackerHost } from "./todo-tracker";
 import { TtsrCoordinator, type TtsrCoordinatorHost } from "./ttsr-coordinator";
 
 import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "../advisor/settings";
@@ -488,6 +494,9 @@ import {
 	cfgDevAutoqa,
 	cfgDevAutoqaConsent,
 	cfgTaskCompleteEnabled,
+	cfgTaskCompleteReconnect,
+	cfgTaskCompleteReconnectDelay,
+	cfgTaskCompleteReconnectMax,
 	cfgTodoEnabled,
 	cfgToolsApproval,
 } from "../tools/settings";
@@ -1040,6 +1049,12 @@ export class AgentSession implements SettingsScope {
 	 * tool call. Cleared before every new prompt turn.
 	 */
 	#taskCompleteTerminated = false;
+	/**
+	 * Consecutive unconfirmed-completion reconnects within the current prompt
+	 * cycle. Reset by a successful non-marker tool result (real progress) and by
+	 * every new prompt. The gate refuses to reconnect past `taskComplete.reconnectMax`.
+	 */
+	#unconfirmedReconnectCount = 0;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	readonly #cacheWarmer: CacheWarmer | undefined;
 	#hindsightSessionState: HindsightSessionState | undefined = undefined;
@@ -1052,6 +1067,7 @@ export class AgentSession implements SettingsScope {
 		this.#yieldTerminationPending = false;
 		this.#taskCompleteTerminated = false;
 		this.#taskCompleteSilentContinuations = 0;
+		this.#unconfirmedReconnectCount = 0;
 	}
 
 	#acquirePowerAssertion(): void {
@@ -3479,6 +3495,11 @@ export class AgentSession implements SettingsScope {
 		// not progress an agent could mark done.
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			this.#todo.onToolResult(event.message.toolName, event.message.isError);
+			// Any successful non-marker tool result is real progress: the reconnect
+			// budget is renewed so a long healthy run never trips the dead-loop cap.
+			if (event.message.toolName !== TASK_COMPLETE_TOOL_NAME && !event.message.isError) {
+				this.#unconfirmedReconnectCount = 0;
+			}
 			// task_complete 标记:成功结果即"模型判定任务完成/需要输入/受阻",
 			// settle 路径据此终止(裸停止不再触发 guard nudge)。
 			if (event.message.toolName === TASK_COMPLETE_TOOL_NAME && !event.message.isError) {
@@ -4077,6 +4098,13 @@ export class AgentSession implements SettingsScope {
 			if (msg.stopReason === "aborted") {
 				this.#recovery.resolveRetry();
 				this.#resetSessionStopContinuationState();
+				// A reasonless provider abort with unconfirmed work reconnects at the
+				// fixed interval; a user interrupt (session still aborting) stays
+				// terminal, and TTSR self-repair already owns its hidden retry.
+				if (!ttsrAbortPendingAtAgentEnd && (await this.#maybeScheduleUnconfirmedReconnect(msg)) === true) {
+					await emitAgentEndNotification({ willContinue: true });
+					return;
+				}
 				await emitAgentEndNotification(ttsrAbortPendingAtAgentEnd ? { willContinue: true } : undefined);
 				return;
 			}
@@ -4176,7 +4204,11 @@ export class AgentSession implements SettingsScope {
 			// the marker call. The marker IS the model's own stop decision, so the
 			// stop-time tail (todo reconciliation, session_stop hooks) still runs.
 			if (hasToolCalls && !this.#taskCompleteTerminated) {
-				await emitAgentEndNotification();
+				if (!(await this.#maybeScheduleUnconfirmedReconnect(msg))) {
+					await emitAgentEndNotification();
+					return;
+				}
+				await emitAgentEndNotification({ willContinue: true });
 				return;
 			}
 			// When compaction queued recovery or hit a deliberate dead-end, skip the
@@ -4219,6 +4251,15 @@ export class AgentSession implements SettingsScope {
 				await emitAgentEndNotification({ willContinue: true, awaitingAsyncWork: true });
 				return;
 			}
+			// Last-resort persistence: every recovery above declined. The gate must
+			// see the marker before it is discharged — a confirmed stop settles.
+			if (await this.#maybeScheduleUnconfirmedReconnect(msg)) {
+				await emitAgentEndNotification({ willContinue: true });
+				return;
+			}
+			// A marker-confirmed stop is the model's own terminal decision: discharge
+			// it so the confirmation cannot leak into a later settle of the cycle.
+			this.#dischargeTaskCompleteMarker(msg);
 			const sessionStopWillContinue = await this.#emitSessionStopEvent(activeMessages, msg);
 			await emitAgentEndNotification(sessionStopWillContinue ? { willContinue: true } : undefined);
 		}
@@ -4377,6 +4418,121 @@ export class AgentSession implements SettingsScope {
 			this.#taskCompleteMarked = false;
 			this.#taskCompleteSilentContinuations = 0;
 		}
+	}
+	/**
+	 * Unconfirmed-completion reconnect: the run is about to settle and the model
+	 * never confirmed completion with a successful `task_complete` marker. A stop
+	 * the model did not choose — a provider error, or an abort the session is not
+	 * driving — or a clean stop that leaves work outstanding (active goal,
+	 * incomplete todos) resubmits the turn after a fixed interval instead of
+	 * terminating, so a flaky upstream keeps the run alive until the model
+	 * confirms, the user interrupts, or the dead-loop cap settles it. Confirmed
+	 * markers, user interrupts, yields, disposed/aborting sessions, subagents,
+	 * and clean chat stops with nothing outstanding stay terminal.
+	 *
+	 * @returns true when the reconnect owns the next turn (the caller reports
+	 *   `willContinue`).
+	 */
+	async #maybeScheduleUnconfirmedReconnect(msg: AssistantMessage): Promise<boolean> {
+		if (this.#agentKind !== "main") return false;
+		if (cfgTaskCompleteReconnect.get(this.settings) !== true) return false;
+		if (this.#taskCompleteTerminated || this.#taskCompleteMarked) return false;
+		if (this.#isDisposed || this.#abortInProgress) return false;
+		if (AIError.is(msg.errorId, AIError.Flag.UserInterrupt)) return false;
+		// A streaming-edit guard abort is a deliberate local stop (failed-patch
+		// preview): the user is mid-review, so settling the turn is the contract.
+		if (this.#streamingEditGuard.abortTriggered) return false;
+		const activeGoal = this.#goalModeState?.enabled === true && this.#goalModeState.goal.status === "active";
+		const incompleteTodos = this.#incompleteTodoCount();
+		const providerFault =
+			msg.stopReason === "error" ||
+			(msg.stopReason === "aborted" &&
+				// Internal lifecycle aborts (compact, model switch, /new) carry their
+				// own reason; user interrupts are stamped above. Only the reasonless
+				// provider/watchdog sentinel means the connection dropped.
+				(msg.errorMessage === "Request was aborted" ||
+					msg.errorMessage === "Request was aborted." ||
+					AIError.is(msg.errorId, AIError.Flag.Abort)));
+		if (!providerFault && !activeGoal && incompleteTodos === 0) return false;
+		if (!providerFault && isAssistantAwaitingUserAnswer(msg)) return false;
+		const maxReconnects = cfgTaskCompleteReconnectMax.get(this.settings);
+		if (maxReconnects > 0 && this.#unconfirmedReconnectCount >= maxReconnects) {
+			logger.warn("Unconfirmed-completion reconnect cap reached; settling", {
+				count: this.#unconfirmedReconnectCount,
+				max: maxReconnects,
+				stopReason: msg.stopReason,
+			});
+			return false;
+		}
+		this.#unconfirmedReconnectCount++;
+		const unfinished = this.#unconfirmedReconnectWorkList(activeGoal, incompleteTodos);
+		const text = prompt.render(unconfirmedReconnectTemplate, {
+			reason:
+				msg.stopReason === "error" && msg.errorMessage
+					? msg.errorMessage.replace(/\s+/g, " ").slice(0, 200)
+					: undefined,
+			unfinished,
+			attempt: this.#unconfirmedReconnectCount,
+			max: maxReconnects > 0 ? maxReconnects : undefined,
+		});
+		const reconnectMessage = {
+			role: "developer" as const,
+			content: [{ type: "text" as const, text }],
+			attribution: "agent" as const,
+			timestamp: Date.now(),
+		};
+		this.agent.appendMessage(reconnectMessage);
+		this.sessionManager.appendMessage(reconnectMessage);
+		logger.info("Unconfirmed completion; reconnecting at interval", {
+			attempt: this.#unconfirmedReconnectCount,
+			stopReason: msg.stopReason,
+			provider: msg.provider,
+			model: msg.model,
+			activeGoal,
+			incompleteTodos,
+			delayMs: TASK_UNCONFIRMED_RECONNECT_DELAY_MS,
+		});
+		this.#scheduleAgentContinue({
+			source: "task-unconfirmed-reconnect",
+			delayMs: cfgTaskCompleteReconnectDelay.get(this.settings),
+			generation: this.#promptGeneration,
+		});
+		return true;
+	}
+
+	/** Counts incomplete (pending/in_progress) todo tasks across all phases. */
+	#incompleteTodoCount(): number {
+		return this.#todo.phases.reduce(
+			(count, phase) =>
+				count + phase.tasks.filter(task => task.status === "pending" || task.status === "in_progress").length,
+			0,
+		);
+	}
+
+	/** Model-facing work list for the reconnect reminder: open todos first, then the active goal. */
+	#unconfirmedReconnectWorkList(activeGoal: boolean, incompleteTodos: number): string {
+		const lines: string[] = [];
+		const phases = this.#todo.phases
+			.map(phase => ({
+				name: phase.name,
+				tasks: phase.tasks.filter(
+					(task): task is TodoItem & { status: "pending" | "in_progress" } =>
+						task.status === "pending" || task.status === "in_progress",
+				),
+			}))
+			.filter(phase => phase.tasks.length > 0);
+		if (phases.length > 0) {
+			lines.push(
+				`Unfinished todo work remains (${incompleteTodos} incomplete item${incompleteTodos === 1 ? "" : "s"}):`,
+			);
+			for (const phase of phases) {
+				lines.push(`- ${phase.name}`);
+				for (const task of phase.tasks) lines.push(`  - ${task.content}`);
+			}
+		}
+		if (activeGoal) lines.push("An active goal is in progress and has not been completed.");
+		if (lines.length === 0) lines.push("The turn ended before the work could be confirmed.");
+		return lines.join("\n") + "\n";
 	}
 	#scheduleAgentContinue(options: ScheduledAgentContinueOptions): void {
 		const request: ScheduledAgentContinueRequest = {
@@ -9301,6 +9457,7 @@ export class AgentSession implements SettingsScope {
 			this.#taskCompleteMarked = false;
 			this.#taskCompleteTerminated = false;
 			this.#taskCompleteSilentContinuations = 0;
+			this.#unconfirmedReconnectCount = 0;
 			this.#planReferenceSent = false;
 			this.#planReferencePath = "local://PLAN.md";
 			this.#advisors.resetSessionState();

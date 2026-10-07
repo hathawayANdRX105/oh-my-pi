@@ -379,6 +379,52 @@ export const cfgTaskCompleteEnabled = register({
 	},
 });
 
+export const cfgTaskCompleteReconnect = register({
+	id: "taskComplete.reconnect",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Task Complete Reconnect",
+		description:
+			"When a run settles without a confirmed task_complete marker and work is still outstanding (provider error, watchdog abort, active goal, or incomplete todos), resubmit the turn at a fixed interval instead of stopping. User interrupts and confirmed markers stay terminal",
+	},
+});
+
+export const cfgTaskCompleteReconnectDelay = register({
+	id: "taskComplete.reconnectDelayMs",
+	type: "number",
+	default: 30_000,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Task Complete Reconnect Interval",
+		description:
+			"Delay between an unconfirmed stop and the interval reconnect, in milliseconds. 0 reconnects as soon as the turn settles",
+	},
+});
+
+export const cfgTaskCompleteReconnectMax = register({
+	id: "taskComplete.reconnectMax",
+	type: "number",
+	default: 20,
+	ui: {
+		tab: "tools",
+		group: "Available Tools",
+		label: "Task Complete Reconnect Limit",
+		description:
+			"Consecutive unconfirmed reconnects before the run settles; any successful tool result resets the counter. 0 disables the cap",
+		options: [
+			{ value: "5", label: "5 reconnects" },
+			{ value: "10", label: "10 reconnects" },
+			{ value: "20", label: "20 reconnects" },
+			{ value: "50", label: "50 reconnects" },
+			{ value: "0", label: "Unlimited" },
+		],
+	},
+});
+
 export const cfgTodoEager = register({
 	id: "todo.eager",
 	type: "enum",
