@@ -247,7 +247,7 @@ export class TodoTracker {
 			this.#reminderAwaitingProgress = false;
 			return false;
 		}
-		if (isAwaitingUserAnswer(message)) {
+		if (isAssistantAwaitingUserAnswer(message)) {
 			logger.debug("Todo completion: assistant is waiting for user input; skipping reminder", {
 				incomplete: incomplete.length,
 			});
@@ -395,7 +395,12 @@ function isResponseCueLine(line: string): boolean {
 	return USER_RESPONSE_CUE_RE.test(candidate);
 }
 
-function isAwaitingUserAnswer(message: AssistantMessage): boolean {
+/**
+ * Whether the assistant's final line is a user-directed question or an
+ * answer cue ("please confirm", "let me know"): such a stop is waiting on
+ * the user, so stop-time continuations must not re-prompt the model.
+ */
+export function isAssistantAwaitingUserAnswer(message: AssistantMessage): boolean {
 	const text = assistantText(message);
 	if (!text) return false;
 	const lastLine = text.split(/\r?\n/).at(-1)?.trim();
