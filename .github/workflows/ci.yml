@@ -77,10 +77,11 @@ concurrency:
 
 env:
    FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-   # native_addons builds the pair TS jobs need; native_addons_cross builds the
-   # rest. Together they must equal //:natives-linux-all (checked in the cross
-   # job), so a filegroup addition cannot silently skip both.
-   NATIVES_X64_TARGETS: natives-linux-x64-baseline natives-linux-x64-modern
+   # Fork policy: only the modern x64 variant builds. Baseline was a second
+   # full cold bazel build (~20 min) with no consumer on this fork; re-adding
+   # "natives-linux-x64-baseline" here and in //:natives-linux-all restores it.
+   # native_addons builds this list; native_addons_cross (disabled) the rest.
+   NATIVES_X64_TARGETS: natives-linux-x64-modern
    NATIVES_CROSS_TARGETS: natives-linux-arm64 natives-linux-musl-arm64 natives-linux-musl-x64-baseline natives-win32-arm64 natives-win32-x64-baseline
    # Per-test wall-clock ceiling (seconds) for scripts/ci-test-ts.ts. omp-kata
    # runners with reclaim_guest_freed_memory (infra/tune-kata-runtime.sh) run
@@ -334,9 +335,10 @@ jobs:
               tarball="$(npm view @oh-my-pi/pi-natives-linux-x64@latest dist.tarball)"
               echo "Fetching $tarball"
               curl -fsSL --retry 3 "$tarball" | tar -xz -C "$RUNNER_TEMP"
-              mkdir -p ci-natives/natives-linux-x64-baseline ci-natives/natives-linux-x64-modern
-              cp "$RUNNER_TEMP/package/pi_natives.linux-x64-baseline.node" ci-natives/natives-linux-x64-baseline/
-              cp "$RUNNER_TEMP/package/pi_natives.linux-x64-modern.node" ci-natives/natives-linux-x64-modern/
+              for target in $NATIVES_X64_TARGETS; do
+                mkdir -p "ci-natives/$target"
+                cp "$RUNNER_TEMP/package/pi_natives.${target#natives-}.node" "ci-natives/$target/"
+              done
          # Make the addon source visible whenever it is not source-matched,
          # instead of leaving a reviewer to wonder which addons the tests ran.
          - name: Report native addon source
@@ -414,9 +416,10 @@ jobs:
               EOF
               loader=node
               if command -v bun >/dev/null 2>&1; then loader=bun; fi
-              "$loader" "$RUNNER_TEMP/smoke-addons.js" \
-                "$PWD/ci-natives/natives-linux-x64-baseline/pi_natives.linux-x64-baseline.node" \
-                "$PWD/ci-natives/natives-linux-x64-modern/pi_natives.linux-x64-modern.node"
+              for target in $NATIVES_X64_TARGETS; do
+                "$loader" "$RUNNER_TEMP/smoke-addons.js" \
+                  "$PWD/ci-natives/$target/pi_natives.${target#natives-}.node"
+              done
          # Kata test jobs download ~120 MB of artifact over the node's NAT
          # egress (44-68 s per job, on the critical path). Every kata pod
          # mounts the shared runner-cache PVC at /opt/bazel-repo-cache (the
@@ -597,7 +600,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: Test coding-agent native/unit bucket
            env:
@@ -616,7 +619,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: Test workspace packages and repo scripts (TS)
            env:
@@ -639,7 +642,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: Test coding-agent singleton/global-state bucket
            # Keep global Settings/env/fake-timer tests serial; native addon
@@ -657,7 +660,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: Test native/TUI/browser-ish packages (TS)
            env:
@@ -675,7 +678,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: Test coding-agent UI/TUI bucket
            env:
@@ -693,7 +696,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: Test coding-agent runtime bucket
            # Runtime/session tests import native-backed barrels too; keep this
@@ -713,7 +716,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: CLI smoke test
            run: bun run ci:test:smoke
@@ -728,7 +731,7 @@ jobs:
          - uses: ./.github/actions/bun-install
          - uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
               stash: ${{ needs.native_addons.outputs.stash }}
          - name: Install method smoke tests
            env:
@@ -786,7 +789,7 @@ jobs:
                     arch: x64,
                     target_id: linux-x64,
                     binary_path: packages/coding-agent/binaries/omp-linux-x64,
-                    native_targets: linux-x64-baseline linux-x64-modern,
+                    native_targets: linux-x64-modern,
                  }
       runs-on: ${{ matrix.os }}
       permissions:
@@ -1057,7 +1060,7 @@ jobs:
          - name: Install linux and win32-x64 native addons
            uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern linux-arm64 win32-x64-baseline win32-arm64
+              targets: linux-x64-modern linux-arm64 win32-x64-baseline win32-arm64
          # Native-host addons come flat (canonical filenames) from the
          # release_binary_hosted legs.
          - name: Install native-host addons
@@ -1252,7 +1255,7 @@ jobs:
          - name: Install prebuilt native addons
            uses: ./.github/actions/native-artifacts
            with:
-              targets: linux-x64-baseline linux-x64-modern
+              targets: linux-x64-modern
          - name: Publish to npm
            env:
               # Fallback auth: setup-node wrote an .npmrc referencing
