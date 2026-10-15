@@ -154,6 +154,7 @@ function createContext(): {
 		session: {
 			isStreaming: false,
 			isRunActive: false,
+			hasPendingUnconfirmedReconnect: false,
 			isCompacting: false,
 			isGeneratingHandoff: false,
 			isBashRunning: false,
@@ -286,7 +287,7 @@ type MutableSessionState = InteractiveModeContext["session"] & {
 	isStreaming: boolean;
 };
 
-type MutableRunState = { isRunActive: boolean };
+type MutableRunState = { isRunActive: boolean; hasPendingUnconfirmedReconnect: boolean };
 
 function mutableRunState(ctx: InteractiveModeContext): MutableRunState {
 	// Test harness installs a mutable fake AgentSession. `isRunActive` is a
@@ -595,6 +596,23 @@ describe("InputController escape behavior", () => {
 	it("aborts a run advertised as live with no bytes in flight", () => {
 		const { ctx, editor, spies } = createContext();
 		mutableRunState(ctx).isRunActive = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.();
+
+		expect(spies.abort).toHaveBeenCalledTimes(1);
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+	});
+
+	// A run that settled with a parked unconfirmed-reconnect timer advertises
+	// neither streaming nor a live run: both flags read false while the timer
+	// will resume the turn on its own. Before the pending-reconnect term, Esc
+	// fell through to the draft/double-Esc branches and the model resumed
+	// anyway — pressing Esc could not stop it.
+	it("aborts a parked reconnect wait so the run cannot resume behind the user", () => {
+		const { ctx, editor, spies } = createContext();
+		mutableRunState(ctx).hasPendingUnconfirmedReconnect = true;
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
