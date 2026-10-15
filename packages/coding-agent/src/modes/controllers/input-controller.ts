@@ -566,11 +566,18 @@ export class InputController {
 				this.ctx.editor.setText("");
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
-			} else if (this.ctx.session.isStreaming || this.ctx.session.isRunActive) {
+			} else if (
+				this.ctx.session.isStreaming ||
+				this.ctx.session.isRunActive ||
+				this.ctx.session.hasPendingUnconfirmedReconnect
+			) {
 				// `isRunActive` also catches a run that is advertised but has no bytes in
 				// flight (backoff wait, or a stream that died before settling). Without
 				// it, Esc silently falls through to the draft/double-Esc branches while
 				// the UI shows a running badge, and the user has no way out.
+				// `hasPendingUnconfirmedReconnect` covers the parked-interval window:
+				// the run already settled, so both streaming flags read false, but the
+				// reconnect timer will resume the turn on its own — Esc must abort it.
 				this.#abortStreamingTurn();
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc must not destroy an in-progress draft.

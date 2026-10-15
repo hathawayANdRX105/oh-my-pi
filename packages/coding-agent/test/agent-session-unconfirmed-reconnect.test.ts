@@ -7,6 +7,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import {
 	cfgTaskCompleteReconnect,
 	cfgTaskCompleteReconnectDelay,
@@ -122,6 +123,28 @@ describe("AgentSession unconfirmed-completion reconnect", () => {
 				toolCallId,
 				toolName: "task_complete",
 				content,
+				isError: false,
+				timestamp: Date.now(),
+			},
+		});
+	}
+
+	function emitSilentMarkerTurn(): void {
+		// Silent marker: tool call only, no text — the loop continues so the
+		// model still owes its report turn.
+		const toolCallId = `call_task_complete_silent_${Date.now()}_${Math.random()}`;
+		const toolCall: ToolCall = { type: "toolCall", id: toolCallId, name: "task_complete", arguments: {} };
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: assistantMessage([toolCall], "toolUse"),
+		});
+		session.agent.emitExternalEvent({
+			type: "message_end",
+			message: {
+				role: "toolResult",
+				toolCallId,
+				toolName: "task_complete",
+				content: [{ type: "text", text: "ok" }] as TextContent[],
 				isError: false,
 				timestamp: Date.now(),
 			},
@@ -331,5 +354,64 @@ describe("AgentSession unconfirmed-completion reconnect", () => {
 
 		expect(reconnectReminders()).toHaveLength(0);
 		expect(terminalEnds).toEqual([false]);
+	});
+
+	it("reconnects when a silent marker's report turn is cut short (length)", async () => {
+		// Failure mode: the model fires a silent task_complete marker, then its
+		// report turn hits maxTokens (stopReason "length"). The settle used to
+		// read the marker as confirmed even though the report never landed,
+		// vetoing the reconnect — the user saw a truncated report and had to
+		// type to resume. Only a clean stop may count as the confirmation.
+		cfgTaskCompleteReconnectDelay.override(session.settings, 0);
+		setIncompleteTodos();
+		emitSilentMarkerTurn();
+		emitStop(assistantMessage([{ type: "text", text: "All steps are done and verified so far but the" }], "length"));
+		await session.waitForIdle();
+
+		// The truncated report could not confirm the marker: the incomplete
+		// todos own the next turn so the report still gets delivered.
+		expect(reconnectReminders()).toHaveLength(1);
+		expect(terminalEnds).toEqual([false]);
+	});
+
+	it("reconnects a reasonless abort that cut a silent marker's report short", async () => {
+		// Failure mode: after a silent marker, the report turn died on the
+		// reasonless provider/watchdog sentinel (the flaky-gateway stop). The
+		// aborted-branch gate read the armed marker as confirmed and vetoed the
+		// reconnect, settling without ever delivering the report.
+		cfgTaskCompleteReconnectDelay.override(session.settings, 0);
+		setIncompleteTodos();
+		emitSilentMarkerTurn();
+		emitAbortedStop("Request was aborted", AIError.create(AIError.Flag.Abort));
+		await session.waitForIdle();
+
+		expect(reconnectReminders()).toHaveLength(1);
+		expect(terminalEnds).toEqual([false]);
+	});
+
+	it("Esc aborts a parked reconnect so the run does not resume on its own", async () => {
+		// Failure mode: after a settle with a parked reconnect timer, both
+		// isStreaming and isRunActive read false — Esc fell through to the
+		// draft/double-Esc branches, and the interval later resumed the turn.
+		vi.useFakeTimers();
+		try {
+			cfgTaskCompleteReconnectDelay.override(session.settings, 500);
+			setIncompleteTodos();
+			emitErrorStop("502 upstream status 405: Blocked clients", 135168);
+			await session.waitForIdle();
+			expect(session.hasPendingUnconfirmedReconnect).toBe(true);
+
+			await session.abort({ reason: USER_INTERRUPT_LABEL });
+
+			expect(session.hasPendingUnconfirmedReconnect).toBe(false);
+			expect(session.isRunActive).toBe(false);
+			// Well past the parked interval: the cleared timer never fired, so
+			// the run never resumed and no reminder landed behind the stop.
+			vi.advanceTimersByTime(60_000);
+			expect(session.agent.continue).not.toHaveBeenCalled();
+			expect(reconnectReminders()).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

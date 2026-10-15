@@ -4112,7 +4112,14 @@ export class AgentSession implements SettingsScope {
 				// A reasonless provider abort with unconfirmed work reconnects at the
 				// fixed interval; a user interrupt (session still aborting) stays
 				// terminal, and TTSR self-repair already owns its hidden retry.
-				if (!ttsrAbortPendingAtAgentEnd && (await this.#maybeScheduleUnconfirmedReconnect(msg)) === true) {
+				// Only a terminated marker run counts as confirmed here: a silent
+				// marker whose report turn died with a reasonless abort (watchdog/
+				// dropped socket) must not veto the reconnect that owes the report,
+				// matching the clean-stop rule the settle tail applies.
+				if (
+					!ttsrAbortPendingAtAgentEnd &&
+					(await this.#maybeScheduleUnconfirmedReconnect(msg, this.#taskCompleteTerminated)) === true
+				) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
 				}
@@ -4236,11 +4243,13 @@ export class AgentSession implements SettingsScope {
 			}
 			// A capped empty stop still has stopReason "stop"; built-in reminders
 			// must not restart it after recovery has declared the turn terminal.
-			// The marker is the model's own "I confirmed completion" signal. Capture it
-			// before the branch below discharges it: the reconnect gate at the bottom
-			// must still be able to tell a confirmed stop from an unconfirmed one, or
-			// a marker stop with stale todos would reconnect.
-			const markerConfirmed = this.#taskCompleteTerminated || this.#taskCompleteMarked;
+			// The marker is the model's own "I confirmed completion" signal, but a
+			// confirmation only counts when the stop was clean: a silent marker
+			// whose report turn died (truncation, transport fault) must not veto
+			// the reconnect that still owes the user its report. Captured before
+			// the branch below discharges it.
+			const markerConfirmed =
+				this.#taskCompleteTerminated || (this.#taskCompleteMarked && msg.stopReason === "stop");
 			if (msg.stopReason !== "error" && emptyOutputRecovery !== "terminal") {
 				if (this.#enforceRewindBeforeYield()) {
 					await emitAgentEndNotification({ willContinue: true });
@@ -4428,6 +4437,9 @@ export class AgentSession implements SettingsScope {
 	 */
 	#dischargeTaskCompleteMarker(msg: AssistantMessage): void {
 		if (cfgTaskCompleteEnabled.get(this.settings) !== true) return;
+		// Only a clean stop consumes the confirmation. The marker must survive a
+		// report turn that died (truncation, transport fault): the reconnect it
+		// allows ends in the clean report stop that consumes the marker then.
 		if (msg.stopReason !== "stop") return;
 		if (this.#taskCompleteMarked) {
 			// 模型主动标记(完成/需要输入/受阻):本轮终止。
@@ -6153,6 +6165,10 @@ export class AgentSession implements SettingsScope {
 	 */
 	get isRunActive(): boolean {
 		return this.#runState === "running";
+	}
+
+	get hasPendingUnconfirmedReconnect(): boolean {
+		return this.#unconfirmedReconnectTimer !== undefined;
 	}
 
 	/**
