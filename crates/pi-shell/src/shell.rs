@@ -3430,14 +3430,20 @@ mod tests {
 		let (mut session, params) = kill_test_context().await;
 		let source_info = SourceInfo::from("pi-natives:test");
 
+		// Generous on purpose: this handshake (two `sh` processes that self-STOP
+		// behind build-tool orchestration) is the slowest in the suite, and
+		// bazel runs tests beside concurrent compile actions on a 4-core CI
+		// runner — a 5s budget tripped twice under that cold load (run
+		// 38788883758). The contract asserted here is signal delivery, not
+		// latency.
 		time::timeout(
-			Duration::from_secs(5),
+			Duration::from_secs(15),
 			session.shell.run_string(command, &source_info, &params),
 		)
 		.await
 		.expect("pipeline did not stop")
 		.expect("stopped pipeline");
-		time::timeout(Duration::from_secs(5), async {
+		time::timeout(Duration::from_secs(15), async {
 			while !first_ready.exists() || !second_ready.exists() {
 				time::sleep(Duration::from_millis(10)).await;
 			}
