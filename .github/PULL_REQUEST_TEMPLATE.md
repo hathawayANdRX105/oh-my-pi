@@ -15,7 +15,7 @@
 - [ ] `bun check` passes
 - [ ] Tested locally
 - [ ] CHANGELOG updated with the required attribution (if user-facing; internal issue fixes use issue links, external contributions add the PR link and contributor credit after creation)
-## 审查记录（closeout 硬规则）
+## Review record (closeout hard rule)
 
 <!-- 收尾审查后填写。每条发现一行, 不许静默漏项; 驳回要写理由 -->
 | 发现 | 来源 | 严重度 | 处置 |
