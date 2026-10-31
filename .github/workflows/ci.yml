@@ -777,14 +777,15 @@ jobs:
    # omp-linux-arm64 (Android ARM64 via Termux glibc-runner) — the darwin, win32,
    # and musl legs and every consumer needing them are switched off below.
    # Publishing is gated on release_gate downstream.
-   # The `if` checks only release_metadata (NOT the addon jobs' results): GitHub
-   # can evaluate a job's `if` before a not-yet-settled long-pole need is
-   # reflected, which would silently skip the binary build even though the
-   # addons are still building. The addon jobs stay in `needs` so this job still
-   # waits for their artifacts before running (see release_gate comment).
+   # The `if` uses only workflow-level contexts (ref / event / commit message),
+   # never `needs.*.outputs` or `.result`: GitHub can evaluate a job's `if`
+   # before a not-yet-settled long-pole need is reflected, which silently
+   # skipped this job even when release_metadata had already set is-release.
+   # The addon jobs stay in `needs` so this job still waits for their
+   # artifacts before running (see release_gate comment).
    release_binary:
       name: "Release binary: ${{ matrix.target_id }}"
-      if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() }}
+      if: "${{ !cancelled() && (startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' || startsWith(github.event.head_commit.message, 'chore: bump version to ')) }}"
       needs: [release_metadata, native_addons, native_addons_cross]
       strategy:
          fail-fast: false
