@@ -80,9 +80,11 @@ env:
    # Fork policy: only the modern x64 variant builds. Baseline was a second
    # full cold bazel build (~20 min) with no consumer on this fork; re-adding
    # "natives-linux-x64-baseline" here and in //:natives-linux-all restores it.
-   # native_addons builds this list; native_addons_cross (disabled) the rest.
+   # native_addons builds this list; native_addons_cross builds the rest: the
+   # linux-arm64 addon feeds the omp-linux-arm64 release binary (Android ARM64
+   # via Termux glibc-runner); musl/win32 addons have no fork consumer.
    NATIVES_X64_TARGETS: natives-linux-x64-modern
-   NATIVES_CROSS_TARGETS: natives-linux-arm64 natives-linux-musl-arm64 natives-linux-musl-x64-baseline natives-win32-arm64 natives-win32-x64-baseline
+   NATIVES_CROSS_TARGETS: natives-linux-arm64
    # Per-test wall-clock ceiling (seconds) for scripts/ci-test-ts.ts. omp-kata
    # runners with reclaim_guest_freed_memory (infra/tune-kata-runtime.sh) run
    # the SQLite/subprocess-heavy coding-agent suites 1.5-2x slower, which put
@@ -518,13 +520,12 @@ jobs:
    # ahead of it: serially after the pair they held every test job back ~10
    # min on native-changing main pushes. Non-PR only, like rust_validate;
    # the build also keeps the remote cache warm for release runs.
-   # Fork release policy: only omp-linux-x64 ships, so nothing consumes the
-   # arm64/musl/win32 addons and this leg (the longest bazel build in the
-   # fan-out) stays off. Re-enable together with a non-linux release_binary
-   # matrix entry.
+   # Fork release policy: only the linux-arm64 addon is cross-built here — it
+   # feeds the omp-linux-arm64 release binary (Android ARM64 via Termux
+   # glibc-runner). musl/win32 addons have no fork consumer and stay off.
    native_addons_cross:
       name: Build native addons (bazel, cross targets)
-      if: false
+      if: github.event_name != 'pull_request'
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -748,7 +749,7 @@ jobs:
    validation_barrier:
       name: Validation barrier
       if: ${{ !cancelled() }}
-      needs: [check, rust_validate, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
+      needs: [check, rust_validate, native_addons, native_addons_cross, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
          - uses: actions/checkout@v4
@@ -769,16 +770,19 @@ jobs:
       steps:
          - run: echo "release validation green"
 
-   # Builds (does not publish) the linux-x64 release binary in parallel with
-   # the test fan-out; native_addons' artifact supplies its addon pair.
-   # Fork release policy: the matrix ships omp-linux-x64 only — the darwin,
-   # win32, musl, and arm64 legs and every consumer needing them are switched
-   # off below. Publishing is gated on release_gate downstream.
+   # Builds (does not publish) the linux-x64 and linux-arm64 release binaries in
+   # parallel with the test fan-out; native_addons supplies the x64 addon and
+   # native_addons_cross the arm64 addon.
+   # Fork release policy: the matrix ships omp-linux-x64 (x86_64, retained) plus
+   # omp-linux-arm64 (Android ARM64 via Termux glibc-runner) — the darwin, win32,
+   # and musl legs and every consumer needing them are switched off below.
+   # Publishing is gated on release_gate downstream.
    release_binary:
       name: "Release binary: ${{ matrix.target_id }}"
       if: ${{ needs.release_metadata.outputs.is-release == 'true' && !cancelled() &&
-         needs.native_addons.result == 'success' }}
-      needs: [release_metadata, native_addons]
+         needs.native_addons.result == 'success' &&
+         needs.native_addons_cross.result == 'success' }}
+      needs: [release_metadata, native_addons, native_addons_cross]
       strategy:
          fail-fast: false
          matrix:
@@ -790,6 +794,14 @@ jobs:
                     target_id: linux-x64,
                     binary_path: packages/coding-agent/binaries/omp-linux-x64,
                     native_targets: linux-x64-modern,
+                 }
+               - {
+                    os: ubuntu-24.04-arm,
+                    platform: linux,
+                    arch: arm64,
+                    target_id: linux-arm64,
+                    binary_path: packages/coding-agent/binaries/omp-linux-arm64,
+                    native_targets: linux-arm64,
                  }
       runs-on: ${{ matrix.os }}
       permissions:
@@ -814,29 +826,15 @@ jobs:
            env:
               RELEASE_TARGETS: ${{ matrix.target_id }}
            run: bun run ci:release:build-binaries
-         # Windows binary is cross-built on Linux, so we have no Windows runner
-         # to smoke it on. Cross-build correctness is verified via the bun
-         # `--compile --target=bun-windows-x64-*` cross-compile. Musl binaries
-         # need the musl loader, which glibc runners lack — they are smoked in
-         # the Alpine container step below instead.
+         # Fork release policy: the matrix has no win32 or musl legs, so every
+         # binary smokes natively on its runner (x64 on ubuntu-22.04, arm64 on
+         # ubuntu-24.04-arm).
          - name: Smoke release binary
-           if: matrix.platform != 'win32' && matrix.libc != 'musl'
+           if: matrix.platform != 'win32'
            run: |
               runtime_dir="$(mktemp -d)"
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version
               HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --smoke-test
-         - name: Smoke musl release binary on Alpine
-           if: matrix.libc == 'musl'
-           run: |
-              binary="$(realpath "${{ matrix.binary_path }}")"
-              # Bun's musl-target binaries link libstdc++/libgcc dynamically;
-              # Alpine users install them alongside the binary (same as bun itself).
-              docker run --rm -v "$binary:/usr/local/bin/omp:ro" alpine:3.22 sh -ec '
-                apk add --no-cache libstdc++ libgcc >/dev/null
-                runtime_dir="$(mktemp -d)"
-                HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" omp --version
-                HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" omp --smoke-test
-              '
          - name: Upload release binary artifact
            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
            with:

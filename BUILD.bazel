@@ -35,17 +35,15 @@ _ADDONS = {
     for target, (platform, out) in _ADDONS.items()
 ]
 
-# Every addon buildable from a linux-x64 host (the omp-kata pods): all linux
-# targets plus the msvc cross build. darwin addons build on mac hosts.
+# Fork policy: only the addons the fork release consumes — the modern linux-x64
+# variant and the linux-arm64 addon for the omp-linux-arm64 release binary
+# (Android ARM64 via Termux glibc-runner). musl/win32 addons have no fork
+# consumer; re-add them here and in the NATIVES_* target lists together.
 filegroup(
     name = "natives-linux-all",
     srcs = [
         ":natives-linux-arm64",
-        ":natives-linux-musl-arm64",
-        ":natives-linux-musl-x64-baseline",
         ":natives-linux-x64-modern",
-        ":natives-win32-arm64",
-        ":natives-win32-x64-baseline",
     ],
 )
 

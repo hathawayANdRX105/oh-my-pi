@@ -65,15 +65,7 @@ export const ADDON_OUTPUTS: Record<string, string> = {
 
 /** Aggregate filegroups → their member addon targets (mirrors BUILD.bazel). */
 export const AGGREGATE_TARGETS: Record<string, string[]> = {
-	"linux-all": [
-		"linux-arm64",
-		"linux-musl-arm64",
-		"linux-musl-x64-baseline",
-		"linux-x64-baseline",
-		"linux-x64-modern",
-		"win32-arm64",
-		"win32-x64-baseline",
-	],
+	"linux-all": ["linux-arm64", "linux-x64-modern"],
 	"darwin-all": ["darwin-arm64", "darwin-x64-baseline"],
 };
 
