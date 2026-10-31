@@ -53,7 +53,7 @@ Notes:
 
 - Windows ARM64 cross-builds from Linux like win32-x64 (msvc toolchain with an aarch64 xwin splat); `release_smoke_win32_arm64` runs the resulting binary on `windows-11-arm`. A Windows ARM64 dev host can still build `host` through Cargo/N-API.
 - musl addons **intentionally reuse** the plain `linux-<arch>` filenames — the loader never sees gnu and musl side by side; release jobs keep them in separate invocations/dest dirs (`scripts/bazel-natives.ts` hard-errors on a basename collision within one run).
-- Aggregates: `//:natives-linux-all` (all linux targets + the msvc cross build, i.e. everything buildable from a linux-x64 host) and `//:natives-darwin-all` (mac hosts only).
+- Aggregates: `//:natives-linux-all` and `//:natives-darwin-all` (mac hosts only). On this fork, `natives-linux-all` is trimmed to the shipped addon set — `linux-arm64` + `linux-x64-modern` — matching the `NATIVES_X64_TARGETS`/`NATIVES_CROSS_TARGETS` lists; musl/win32 addons have no fork consumer (see `BUILD.bazel`).
 
 ### 2) `native_addon` rule (`bazel/defs.bzl`)
 
