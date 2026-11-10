@@ -92,7 +92,7 @@ function createUnavailableMnemopiEmbedWorker(error: unknown): MnemopiEmbedWorker
 	};
 }
 
-function spawnMnemopiEmbedWorker(): MnemopiEmbedWorkerHandle {
+export function spawnMnemopiEmbedWorker(): MnemopiEmbedWorkerHandle {
 	return spawnWorkerOrUnavailable(
 		() => wrapSubprocess(createMnemopiEmbedSubprocess()),
 		createUnavailableMnemopiEmbedWorker,
