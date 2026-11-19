@@ -355,8 +355,8 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 ### 先读规范，再改代码
 
 1. 拿到 finding，先读规则原文，确认这条发现到底要求什么：
-   - canon 规则总览：`gate-spec` skill（正本）；各仓 `.githooks/spec/docs/SPEC_OVERVIEW.md` 为播种副本
-   - 单条规则的参数（匹配范围 / 严重度 / harness）：`.githooks/spec/**/<rule>.yaml`
+   - 规范正本：rust-specs（`~/projects/rust-specs`）——`lints/<rule>/README.md` 是单条规则的正本，`specs/` 是 issue / PR 规范；新规则走 `gate-spec` skill
+   - 本仓不再自带 gate 规则副本（canon 已退役），规则改动去 rust-specs 提 PR
    - 项目适配说明（本仓为什么这么定）：`.agent/rules/gates.md`
 2. 不确定 finding 是否成立时，读完规则仍不能判定 → **记为待裁决**并在交付记录里写明，
    不要凭猜测改代码，也不要直接忽略。
@@ -378,7 +378,7 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 
 | 禁止 | 为什么 | 正确做法 |
 |---|---|---|
-| 改 `.githooks/spec/` 规则、降低 `fail_severity`、删 spec 文件 | 把约束改没，不是修问题 | 在对话里说明规则缺陷，交用户决定 |
+| 改 `rust-specs` 规则、降低严重度、删 spec 文件 | 把约束改没，不是修问题 | 在对话里说明规则缺陷，交用户决定 |
 | `--no-verify`、跳过钩子、直接推 | 绕过的是整个门禁体系 | 修到清零；规则有误上报用户 |
 | `head` / `tail` / `grep -v` 截断输出后当没看见 | 后面的 finding 被吞 | 完整读输出 |
 | 加 `#[allow(dead_code)]` / `# noqa` 消告警 | 压制信号而非解决 | 删无用代码，或写清保留理由 |
@@ -396,7 +396,7 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 
 ### 规范层级
 
-- `.githooks/` 是 canon 领地：agent 不改规则。
+- 规则正本在 rust-specs，本仓不改规则。
 - `.agent/rules/`、`specs/rules/` 是规范正本：发现规则与现实冲突 → 上报用户，不自行改写。
 - 本纪律与各仓既有条款冲突时，以本纪律为准（它更严格）。
 
@@ -585,7 +585,7 @@ The script handles version bump, CHANGELOG finalization, commit, tag, publish, a
 
 ## 工具与命令
 
-- 先用仓库已有的构建/测试/检查入口（`Makefile`、`justfile`、`package.json` scripts、`.githooks/hooks/`），不自己拼裸命令。
+- 先用仓库已有的构建/测试/检查入口（`Makefile`、`justfile`、`package.json` scripts、`just` 配方），不自己拼裸命令。
 - 装依赖、跑重命令（长构建、全量测试、打包）前确认不会抢占用户正在用的资源。
 - 长驻进程（dev server、watcher、调试器）用后台管理，不用一次性命令挂着。
 - 破坏性操作（删除目录、系统级配置、凭据）先停下来说明影响，确认后再做。
